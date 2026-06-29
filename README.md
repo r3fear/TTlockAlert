@@ -14,7 +14,7 @@ Cuando alguien abre la puerta, se intenta un acceso fallido, se fuerza la cerrad
 
 1. Detecta el evento vía polling al **Vercel Relay**, que recibe webhooks de TTLock Cloud
 2. Captura un frame en tiempo real de la cámara SWANN vía RTSP usando ffmpeg
-3. Envía mensaje de texto y foto por WhatsApp a través de **wa-gateway**
+3. Envía mensaje de texto y foto por WhatsApp a través de **[wa-gateway](https://github.com/r3fear/wa-gateway)**
 4. Guarda la foto en historial local organizado por fecha con retención configurable
 5. Monitorea la salud del sistema, verifica batería y envía reporte diario
 
@@ -28,9 +28,9 @@ Cuando alguien abre la puerta, se intenta un acceso fallido, se fuerza la cerrad
 | Configuración | PyYAML | 6.0+ |
 | HTTP cliente | requests | 2.31+ |
 | Captura cámara | ffmpeg | cualquiera con RTSP |
-| Gateway WhatsApp | wa-gateway (Node.js + whatsapp-web.js) | servicio externo |
+| Gateway WhatsApp | [wa-gateway](https://github.com/r3fear/wa-gateway) (Node.js + whatsapp-web.js) | servicio externo |
 | Relay webhooks | Vercel (Node.js serverless) | — |
-| Almacenamiento KV | Vercel KV (Upstash Redis) | — |
+| Almacenamiento KV | Upstash Redis (vía Vercel Marketplace) | — |
 
 ---
 
@@ -42,7 +42,7 @@ Cuando alguien abre la puerta, se intenta un acceso fallido, se fuerza la cerrad
       │  POST /api/ttlock-webhook (form-urlencoded)
       ▼
 [Vercel Relay — ttlock-webhook]
-      │  Eventos guardados en Vercel KV con TTL de 3600s
+      │  Eventos guardados en Upstash Redis con TTL de 3600s
       │
       │  GET /api/ttlock-events (polling cada polling_interval segundos)
       ▼
@@ -117,7 +117,7 @@ Clase `TTLockMonitor`:
 - Token guardado en el archivo definido por `token_file` (por defecto `ttlock_token.cache`).
 
 **Polling de eventos:**
-- `_poll_events()`: `GET {vercel_url}/api/ttlock-events` con header `x-api-key`. Retorna la lista de eventos y vacía la cola en Vercel KV.
+- `_poll_events()`: `GET {vercel_url}/api/ttlock-events` con header `x-api-key`. Retorna la lista de eventos y vacía la cola en Upstash Redis.
 - `_process_event(event)`: despacha según `recordType`. Captura foto si aplica y llama al callback.
 
 **recordType soportados:**
@@ -177,7 +177,7 @@ CLI: `py camera.py` captura un frame de prueba con la configuración de `config.
 
 ### ¿Qué hace y por qué existe?
 
-TTLock Cloud necesita una URL pública accesible desde internet para enviar webhooks. El servidor local que ejecuta TTLock Alert está en una red privada sin IP pública fija. El Vercel Relay actúa como intermediario: recibe los webhooks de TTLock, los guarda temporalmente en Vercel KV, y el servidor local los consume via polling.
+TTLock Cloud necesita una URL pública accesible desde internet para enviar webhooks. El servidor local que ejecuta TTLock Alert está en una red privada sin IP pública fija. El Vercel Relay actúa como intermediario: recibe los webhooks de TTLock, los guarda temporalmente en Upstash Redis, y el servidor local los consume via polling.
 
 ### Estructura
 
@@ -196,15 +196,15 @@ ttlock-webhook/
 
 - Content-Type: `application/x-www-form-urlencoded`
 - Campos: `notifyType`, `lockId`, `lockMac`, `records` (JSON string con array de eventos)
-- Parsea `records`, guarda cada evento en Vercel KV con TTL de 3600 segundos
-- Agrega los IDs a la lista `ttlock:pending` en KV
+- Parsea `records`, guarda cada evento en Upstash Redis con TTL de 3600 segundos
+- Agrega los IDs a la lista `ttlock:pending` en Redis
 - **Siempre responde HTTP 200 con body exacto `success`** — TTLock reintentará el POST si recibe cualquier otra respuesta
 
 **`GET /api/ttlock-events`** — consumido por el servidor local
 
 - Header requerido: `x-api-key: <TTLOCKALERT_API_KEY>`
 - Responde 401 si la clave no coincide, 405 si no es GET
-- Recupera todos los eventos pendientes en un solo round-trip (`mget`), elimina la lista `ttlock:pending`
+- Recupera todos los eventos pendientes de Redis en un solo round-trip (`mget`), elimina la lista `ttlock:pending`
 - Responde `{ "events": [...] }` o `{ "events": [] }` si no hay pendientes
 
 ### Setup paso a paso
@@ -219,15 +219,23 @@ vercel deploy
 
 O conectar el repositorio directamente desde Vercel Dashboard → New Project.
 
-**2. Crear base de datos Redis en Upstash**
+**2. Crear base de datos Redis con Upstash**
 
-Vercel eliminó su producto KV nativo. El almacenamiento usa **Upstash Redis** directamente:
+El almacenamiento usa **Upstash Redis**. Hay dos formas de conectarlo:
+
+**Opción A — Vercel Marketplace (recomendado):**
+
+1. Vercel Dashboard → **Storage** → **Connect Store** → buscar **Upstash KV**
+2. Seguir el flujo de instalación; Vercel crea la base y conecta el proyecto automáticamente
+3. Las variables `KV_REST_API_URL` y `KV_REST_API_TOKEN` se inyectan solas en el proyecto
+
+**Opción B — Cuenta directa en Upstash:**
 
 1. Crear cuenta en [upstash.com](https://upstash.com) (plan gratuito disponible)
 2. Console → **Create Database** → **Redis**
 3. Nombre: `ttlock-kv`, región: la más cercana al servidor
-4. Abrir la base de datos creada → pestaña **REST API**
-5. Copiar `UPSTASH_REDIS_REST_URL` y `UPSTASH_REDIS_REST_TOKEN`
+4. Abrir la base de datos → pestaña **REST API** → copiar `UPSTASH_REDIS_REST_URL` y `UPSTASH_REDIS_REST_TOKEN`
+5. Agregar en Vercel como `KV_REST_API_URL` y `KV_REST_API_TOKEN` respectivamente
 
 **3. Agregar variables de entorno en Vercel**
 
@@ -235,8 +243,8 @@ Vercel Dashboard → proyecto `ttlock-webhook` → **Settings** → **Environmen
 
 | Variable | Valor | Origen |
 |---|---|---|
-| `UPSTASH_REDIS_REST_URL` | URL copiada de Upstash | Manual |
-| `UPSTASH_REDIS_REST_TOKEN` | Token copiado de Upstash | Manual |
+| `KV_REST_API_URL` | URL de Upstash REST API | Auto (Marketplace) o Manual |
+| `KV_REST_API_TOKEN` | Token de Upstash REST API | Auto (Marketplace) o Manual |
 | `TTLOCKALERT_API_KEY` | cadena secreta aleatoria | Manual |
 
 El valor de `TTLOCKALERT_API_KEY` debe coincidir con `ttlock.api_key` en `config.yaml`.
@@ -257,7 +265,7 @@ https://<tu-proyecto>.vercel.app/api/ttlock-webhook
 
 - Python 3.11 o superior
 - ffmpeg instalado y en PATH (`winget install --id Gyan.FFmpeg`)
-- [wa-gateway](https://github.com/tu-usuario/wa-gateway) corriendo como servicio antes de iniciar TTLock Alert
+- [wa-gateway](https://github.com/r3fear/wa-gateway) corriendo como servicio antes de iniciar TTLock Alert
 - Cuenta Vercel con el Relay desplegado (ver sección anterior)
 - Cuenta TTLock Open Platform con aplicación creada y callback registrado
 
@@ -266,8 +274,8 @@ https://<tu-proyecto>.vercel.app/api/ttlock-webhook
 **1. Clonar el repositorio**
 
 ```bash
-git clone https://github.com/tu-usuario/ttlock-alert.git
-cd ttlock-alert
+git clone https://github.com/r3fear/TTlockAlert.git TTLockAlert
+cd TTLockAlert
 ```
 
 **2. Instalar dependencias Python**
@@ -413,6 +421,73 @@ Batería cerradura: 85%
 
 ---
 
+## Monitoreo automático
+
+`HealthMonitor` corre un loop cada 60 segundos que ejecuta tres verificaciones independientes: salud del gateway, nivel de batería y reporte diario.
+
+### Reporte diario automático
+
+Todos los días a la hora configurada en `monitoring.daily_report_time` (por defecto `08:00`), el sistema envía automáticamente a **todos los recipients** un resumen del día anterior:
+
+```
+📊 Reporte diario — 29/06/2026
+━━━━━━━━━━━━━━━━━━━━━
+Batería cerradura: 78%
+Aperturas hoy: 5
+Intentos fallidos hoy: 1
+```
+
+Si las alertas están silenciadas en el momento del envío, se añade una línea adicional:
+
+```
+⚠️ Alertas silenciadas hasta las 10:30
+```
+
+**Comportamiento:**
+- Se envía exactamente una vez por día — si el servicio no estaba corriendo a la hora exacta, el reporte no se recupera; se enviará al día siguiente
+- La comparación de hora es `HH:MM` exacto contra el reloj del sistema — si el loop de 60s se salta el minuto exacto (carga del sistema), el reporte espera al siguiente día
+- Tras enviar el reporte, se ejecuta automáticamente la limpieza de fotos antiguas
+
+**Deshabilitar:** establecer `daily_report_enabled: false` en `config.yaml`. El loop de monitoreo continúa corriendo normalmente (batería, gateway) pero no envía el reporte ni limpia fotos.
+
+### Limpieza automática de fotos
+
+Se ejecuta inmediatamente después de enviar el reporte diario:
+
+- Elimina todos los archivos `.jpg` en `storage.photos_dir` cuya fecha de modificación sea anterior a `retention_days` días
+- Elimina también los directorios vacíos que quedan tras la limpieza (estructura `YYYY/MM/DD/`)
+- Si `retention_days: 0`, la limpieza se omite completamente (retención indefinida)
+- Los errores al eliminar archivos individuales se loguean como `WARNING` y no detienen la limpieza del resto
+
+### Alerta de batería baja
+
+Cuando el nivel de batería cae por debajo de `battery_alert_threshold` (por defecto `30%`):
+
+```
+🔋 Puerta Principal — Batería baja: 22%
+Nivel por debajo del umbral configurado (30%).
+```
+
+- Se envía a todos los recipients vía `send_alert`
+- Máximo una alerta cada 24 horas aunque la batería siga baja
+- El nivel de batería se obtiene del campo `electricQuantity` del último evento recibido de TTLock — si el servicio acaba de arrancar y no ha llegado ningún evento aún, la verificación se omite hasta recibir el primero
+
+### Seguimiento de contadores diarios
+
+`register_event(event)` se llama desde `main.py` para **cada evento** recibido, sin importar el tipo:
+
+| Condición | Acción |
+|---|---|
+| `recordType` en `{1,4,7,8}` y `success == 1` | Suma 1 a `aperturas_hoy`, guarda en historial |
+| `recordType == 9` (código incorrecto) | Suma 1 a `intentos_fallidos_hoy` |
+| Cualquier otro | Se ignora para contadores |
+
+Los contadores se resetean automáticamente a `0` cuando cambia la fecha del sistema (no al medianoche exacto, sino en el siguiente ciclo del loop que detecte el cambio de día).
+
+El historial guarda las **últimas 3 aperturas exitosas** con usuario, método de acceso y fecha/hora, accesibles vía `TT HISTORIAL` o `TT ESTADO`.
+
+---
+
 ## Gestión del servicio NSSM
 
 ```powershell
@@ -464,7 +539,7 @@ Instalar: `py -m pip install -r requirements.txt`
 | Dependencia | Uso | Instalación |
 |---|---|---|
 | ffmpeg | Captura frames RTSP | `winget install --id Gyan.FFmpeg` |
-| wa-gateway | Envío de WhatsApp | Ver repositorio wa-gateway |
+| [wa-gateway](https://github.com/r3fear/wa-gateway) | Envío de WhatsApp | Ver repositorio wa-gateway |
 | NSSM | Servicio Windows | [nssm.cc](https://nssm.cc/download) |
 
 ---
@@ -475,7 +550,8 @@ Instalar: `py -m pip install -r requirements.txt`
 - El campo `password_md5` ya viene en MD5 en la config — se envía directamente a la API sin transformar
 - El token OAuth2 de TTLock dura 90 días (7776000 segundos); `_ensure_token()` lo refresca automáticamente cuando quedan menos de 24 horas para expirar; si `refresh_token` falla, reautentica con password grant
 - TTLock Cloud **requiere recibir exactamente el string `success`** (HTTP 200) al webhook o reintentará el POST indefinidamente
-- Vercel KV guarda cada evento con TTL de 3600 segundos — si el servidor local no los consume dentro de 1 hora, se pierden permanentemente
+- Upstash Redis guarda cada evento con TTL de 3600 segundos — si el servidor local no los consume dentro de 1 hora, se pierden permanentemente
+- Las variables de Upstash que consume el código son `KV_REST_API_URL` y `KV_REST_API_TOKEN` — estos nombres los inyecta Vercel Marketplace automáticamente; si se conecta Upstash manualmente, mapear los valores de Upstash a estos nombres en Vercel
 - `capture_on_open` solo aplica a aperturas exitosas: `success == 1` y `recordType` en `{1, 4, 7, 8}` — nunca captura en intentos fallidos (recordType 9), puerta forzada (10) ni batería baja (11)
 - `recordType 10` (puerta forzada) tiene prioridad `critical` y es **nunca silenciable** — el callback en `main.py` ignora `is_silenced()` para esta prioridad
 - `process_command()` ignora silenciosamente mensajes sin prefijo `"TT "` — diseño intencional para coexistir con RingAlert u otros servicios que compartan el mismo inbox de wa-gateway
