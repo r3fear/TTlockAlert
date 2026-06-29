@@ -35,13 +35,13 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const pendingIds = await redis.lrange('ttlock:pending', 0, -1);
+    const pendingIds = await redis.smembers('ttlock:pending');
 
     if (!pendingIds || pendingIds.length === 0) {
       return res.status(200).json({ events: [] });
     }
 
-    // Fetch all events in one round-trip, then delete the pending list
+    // Fetch all events in one round-trip, then delete the pending set
     const rawEvents = await redis.mget(...pendingIds);
     await redis.del('ttlock:pending');
 

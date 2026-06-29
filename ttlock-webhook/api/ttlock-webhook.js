@@ -65,8 +65,9 @@ module.exports = async function handler(req, res) {
       );
     }
 
+    // SADD ignores duplicates — prevents double-processing when TTLock retries the webhook
     if (eventIds.length > 0) {
-      await redis.rpush('ttlock:pending', ...eventIds);
+      await redis.sadd('ttlock:pending', ...eventIds);
     }
   } catch (err) {
     // Log but never let an error change the response — TTLock must always get "success"
