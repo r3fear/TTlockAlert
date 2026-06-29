@@ -1,0 +1,7 @@
+config.yaml
+ttlock_token*.cache
+fotos/
+logs/
+__pycache__/
+*.pyc
+.vscode/

@@ -1,0 +1,41 @@
+ttlock:
+  client_id: "tu_client_id"
+  client_secret: "tu_client_secret"
+  username: "tu_email_ttlock"
+  password_md5: "md5_de_tu_password"
+  lock_id: 0
+  lock_name: "Puerta Principal"
+  api_url: "https://euapi.ttlock.com"
+  vercel_url: "https://tu-proyecto.vercel.app"
+  api_key: "tu_api_key_vercel"
+  polling_interval: 5
+  token_file: "ttlock_token.cache"
+  battery_alert_threshold: 30
+
+camera:
+  rtsp_url: "rtsp://usuario:password@IP:554/ch02/0"
+  ffmpeg_path: "ffmpeg"
+  capture_on_open: true
+
+whatsapp:
+  gateway_url: "http://127.0.0.1:3000"
+  recipients:
+    - "521XXXXXXXXXX"
+    - ""
+    - ""
+
+storage:
+  photos_dir: "C:\\ttlock-alert\\fotos"
+  retention_days: 90
+
+monitoring:
+  daily_report_time: "08:00"
+  daily_report_enabled: true
+
+email:
+  smtp_server: "smtp.gmail.com"
+  smtp_port: 587
+  sender: "tucorreo@gmail.com"
+  password: "app_password_aqui"
+  recipients:
+    - "tucorreo@gmail.com"
