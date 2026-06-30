@@ -119,8 +119,8 @@ Clase `TTLockMonitor`:
 - Token guardado en el archivo definido por `token_file` (por defecto `ttlock_token.cache`).
 
 **Polling de eventos:**
-- `_poll_events()`: `GET {vercel_url}/api/ttlock-events` con header `x-api-key`. Retorna la lista de eventos y vacía la cola en Upstash Redis.
-- `_process_event(event)`: despacha según `recordType`. Captura foto si aplica y llama al callback.
+- `_poll_events()`: `GET {vercel_url}/api/ttlock-events` con header `x-api-key`. Retorna la lista de eventos y vacía la cola en Upstash Redis. Errores de conexión se loguean como `WARNING`.
+- `_process_event(event)`: despacha según `recordType`. Consulta `/v3/lock/detail` para obtener la batería actualizada en cada evento notificado (fallback al `electricQuantity` del evento si la API falla). El campo `Clave` solo se incluye en el mensaje cuando `recordType == 4` (passcode). Captura foto si aplica y llama al callback.
 
 **recordType soportados:**
 
@@ -147,7 +147,7 @@ Clase `TTLockMonitor`:
 Cualquier unlock (`recordType` 1,4,7,8,9,10,12,32) con `success == 0` se reclasifica automáticamente a nivel `alto`. Todos los demás `recordType` desconocidos se ignoran silenciosamente.
 
 - `get_event_action(level)`: lee `config.ttlock.event_levels[level]` y retorna `(should_notify: bool, should_send_photo: bool)`. Si el nivel no está en la config, retorna `(True, False)` con WARNING. Permite controlar por nivel si se envía notificación y si se adjunta foto, sin tocar código.
-- `get_battery()`: retorna el último nivel de batería conocido (`electricQuantity` del último evento recibido), o `-1` si no se ha recibido ningún evento desde el arranque. Valor en memoria — se pierde al reiniciar.
+- `get_battery()`: retorna el último nivel de batería conocido, o `-1` si no se ha recibido ningún evento desde el arranque. La batería se actualiza en cada evento notificado vía `get_lock_detail()` (fallback al valor del evento si la API falla). Valor en memoria — se pierde al reiniciar.
 - `get_lock_detail()`: `GET /v3/lock/detail` — consulta la API de TTLock en tiempo real. Retorna dict con al menos `electricQuantity` y `lockAlias`. Retorna `{}` ante cualquier error. Llama a `_ensure_token()` internamente.
 - `get_last_record()`: `GET /v3/lockRecord/list?pageSize=1` — retorna el registro de acceso más reciente directamente desde la API (campos: `username`, `keyboardPwd`, `recordType`, `lockDate`, `success`). Retorna `{}` si la lista está vacía o hay error.
 - `get_recent_records(count=3)`: `GET /v3/lockRecord/list?pageSize=count` — retorna los `count` registros más recientes de cualquier tipo sin filtrar. Retorna lista en éxito, `None` en error. Usado por `TT HISTORIAL`.
@@ -508,7 +508,7 @@ Nivel por debajo del umbral configurado (30%).
 
 - Se envía a todos los recipients vía `send_alert`
 - Máximo una alerta cada 24 horas aunque la batería siga baja
-- El nivel de batería se obtiene del campo `electricQuantity` del último evento recibido de TTLock — si el servicio acaba de arrancar y no ha llegado ningún evento aún, la verificación se omite hasta recibir el primero
+- El nivel de batería se obtiene de `get_lock_detail()` en cada evento notificado (fallback al `electricQuantity` del evento si la API falla) — si el servicio acaba de arrancar y no ha llegado ningún evento aún, la verificación se omite hasta recibir el primero
 
 ### Seguimiento de contadores diarios
 
@@ -538,7 +538,7 @@ El archivo `setup-ttlockalert.bat` reúne todas las operaciones en un menú inte
 | `[6] Ver log en tiempo real` | `Get-Content logs\ttlock-alert.log -Wait -Tail 50` |
 | `[7] Consultar cerraduras` | Lista todos los `lockId` vinculados a la cuenta TTLock (con batería y si tienen gateway) |
 | `[8] Verificar Vercel Relay` | Llama al endpoint `/api/ttlock-events` y muestra eventos pendientes en cola |
-| `[9] Enviar evento de prueba` | Simula una apertura (recordType=1) hacia el webhook de Vercel y verifica que el evento quedó en la cola Redis |
+| `[9] Enviar evento de prueba` | Simula una apertura (recordType=1) hacia el webhook de Vercel; espera 7s y verifica si el servicio consumió el evento (cola vacía = flujo completo OK, revisar WhatsApp) |
 
 Todos los datos (credenciales, URLs, destinatarios) se leen desde `config.yaml`.
 
@@ -614,11 +614,12 @@ Instalar: `py -m pip install -r requirements.txt`
 - Los niveles de evento `"informativo"`, `"normal"`, `"alto"`, `"critico"` son los valores válidos en `event_levels` config y como parámetro `priority` del callback
 - El nivel `"critico"` es **nunca silenciable** — `main.py` ignora `is_silenced()` para `priority == "critico"`
 - Cuando `should_notify` es `False` (nivel suprimido por config), `_process_event` llama igualmente al callback con `message=""` — el callback detecta el string vacío, omite `send_alert` pero sí llama `health.register_event(event)` para mantener los contadores
+- El campo `keyboardPwd` (clave de acceso) solo se incluye en el mensaje de notificación cuando `recordType == 4` (Código numérico / passcode); para app, huella digital, tarjeta IC, gateway y otros métodos se omite aunque el campo tenga valor en el evento
 - La foto solo se captura si `should_send_photo == True` (de `get_event_action`) **y** el evento es un unlock exitoso (`success == 1`). No se captura en alertas de sensor, fuerza, tamper, etc., aunque `should_send_photo` sea `True` para ese nivel
 - `process_command()` ignora silenciosamente mensajes sin prefijo `"TT "` — diseño intencional para coexistir con RingAlert u otros servicios que compartan el mismo inbox de wa-gateway
 - `poll_inbox()` usa `GET /inbox?consumer=ttlockalert` (no la cola global) — el consumer name es fijo en el código; si wa-gateway se reinicia y pierde el registro, `poll_inbox()` lo detecta (`ok: false` con error de "no registrado") y llama a `register_consumer()` automáticamente antes de reintentar
 - `register_consumer()` se llama al arrancar `main.py` solo si wa-gateway está disponible; si falla no es fatal — el auto-retry en `poll_inbox()` lo recupera en el siguiente ciclo de 5s
-- `get_lock_detail()` y `get_last_record()` son llamadas síncronas que bloquean brevemente el event loop — aceptable porque son llamadas raras e interactivas (solo al ejecutar `TT ESTADO`); usan `_ensure_token()` internamente por lo que no requieren preparación previa
+- `get_lock_detail()` y `get_last_record()` son llamadas síncronas que bloquean brevemente el event loop; `get_lock_detail()` se llama en cada evento notificado (para batería precisa) y en llamadas interactivas (`TT ESTADO`, reporte diario); `get_last_record()` solo en llamadas interactivas; ambas usan `_ensure_token()` internamente por lo que no requieren preparación previa
 - `TT ESTADO` y el reporte diario consultan la API de TTLock en tiempo real; en modo fallback agregan el sufijo `(caché)` para distinguir datos frescos de datos en memoria
 - `get_today_records()` retorna `None` (error de API) vs `[]` (sin registros hoy) — distinción intencional para que el reporte diario solo active el fallback en memoria ante errores reales, no ante días sin actividad
 - `check_gateway_health()` **solo loguea** las transiciones de estado — wa-gateway gestiona sus propios emails de alerta por desconexión/reconexión interna de WhatsApp
