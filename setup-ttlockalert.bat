@@ -81,7 +81,7 @@ if not exist "%TOKEN_FILE%" (
 echo   [OK] Token encontrado.
 for %%q in ("%TOKEN_FILE%") do echo   Ultima modificacion: %%~tq
 echo.
-py -c "import json,time; d=json.load(open('%TOKEN_FILE%')); exp=d.get('expires_at',0); rem=exp-time.time(); dias=int(rem//86400); h=int((rem%%86400)//3600); print(f'  Expira en: {dias} dias, {h}h') if rem>0 else print('  [!] TOKEN EXPIRADO — el servicio lo renovara al iniciar.')"
+py -c "import json,time; d=json.load(open('%TOKEN_FILE%')); exp=d.get('expires_at',0); rem=exp-time.time(); dias=int(rem//86400); h=int((rem%%86400)//3600); print(f'  Expira en: {dias} dias, {h}h') if rem>0 else print('  [!] TOKEN EXPIRADO - el servicio lo renovara al iniciar.')"
 
 :TOKEN_FIN
 echo.
@@ -147,11 +147,11 @@ if %errorlevel% neq 0 (
     echo   [OK] PyYAML disponible
 )
 
-:: 6. wa-gateway (informativo — no bloquea la instalacion)
+:: 6. wa-gateway (informativo - no bloquea la instalacion)
 set "WA_URL="
 for /f "usebackq tokens=* delims=" %%i in (`py -c "import yaml; c=yaml.safe_load(open('config.yaml')); print(c.get('whatsapp',{}).get('gateway_url',''))" 2^>nul`) do set "WA_URL=%%i"
 if not defined WA_URL (
-    echo   [?] whatsapp.gateway_url no definido en config.yaml — omitiendo verificacion.
+    echo   [?] whatsapp.gateway_url no definido en config.yaml - omitiendo verificacion.
     goto CHECK_WA_FIN
 )
 curl.exe -s --max-time 3 "%WA_URL%/status" >nul 2>&1
