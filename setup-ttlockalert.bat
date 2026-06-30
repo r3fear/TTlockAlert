@@ -299,10 +299,7 @@ echo  ============================================================
 echo     Log en tiempo real  --  Ctrl+C para salir
 echo  ============================================================
 echo.
-set "LOG_PATH="
-for /f "usebackq tokens=* delims=" %%i in (`py -c "import os; print(os.path.join(os.getcwd(),'logs','ttlock-alert.log'))" 2^>nul`) do set "LOG_PATH=%%i"
-if not defined LOG_PATH set "LOG_PATH=%~dp0logs\ttlock-alert.log"
-
+set "LOG_PATH=%~dp0logs\ttlock-alert.log"
 if not exist "%LOG_PATH%" (
     echo   [!] El archivo de log no existe todavia.
     echo       Inicia el servicio primero (opcion 3).
@@ -310,7 +307,7 @@ if not exist "%LOG_PATH%" (
     pause
     goto MENU
 )
-powershell -NoProfile -Command "Get-Content '%LOG_PATH%' -Wait -Tail 50"
+powershell -NoProfile -Command "Get-Content -Wait -Tail 50 -Path '%LOG_PATH%'"
 goto MENU
 
 :: ================================================================
