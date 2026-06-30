@@ -25,15 +25,17 @@ RECORD_TYPE_LEVELS = {
     29: ("critico", "Fuerza aplicada a la cerradura"),
     30: (None,      "Sensor de puerta — cerrada"),
     31: ("alto",    "Sensor de puerta — abierta"),
+    32: ("normal",  "Desde adentro"),
     44: ("critico", "Alerta de manipulación"),
     48: ("critico", "Sistema bloqueado"),
+    50: ("critico", "Alta temperatura"),
     64: ("alto",    "Alarma puerta sin cerrar"),
     65: ("alto",    "Falló al abrir"),
     66: ("normal",  "Falló al cerrar"),
 }
 
 # Unlock methods — success=0 on any of these is reclassified to "alto"
-UNLOCK_TYPES = {1, 4, 7, 8, 9, 10, 12}
+UNLOCK_TYPES = {1, 4, 7, 8, 9, 10, 12, 32}
 
 
 class TTLockMonitor:
@@ -251,6 +253,13 @@ class TTLockMonitor:
             return "\n".join([
                 f"🔒 {name} — Sistema bloqueado por múltiples intentos fallidos",
                 f"Hora: {fecha}",
+            ])
+        if record_type == 50:
+            return "\n".join([
+                f"🌡️ ALTA TEMPERATURA — {name}",
+                "Sistema desbloqueado automáticamente por temperatura extrema",
+                f"Hora: {fecha}",
+                f"Batería: {battery}%",
             ])
         if record_type == 64:
             return "\n".join([f"⚠️ {name} — Puerta sin cerrar — alarma activada", f"Hora: {fecha}"])

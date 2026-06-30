@@ -7,8 +7,8 @@ from datetime import datetime
 
 logger = logging.getLogger("health_monitor")
 
-_UNLOCK_TYPES = {1, 4, 7, 8, 9, 10, 12}
-_ALL_KNOWN_TYPES = {1, 4, 7, 8, 9, 10, 12, 29, 31, 44, 48, 64, 65, 66}
+_UNLOCK_TYPES = {1, 4, 7, 8, 9, 10, 12, 32}
+_ALL_KNOWN_TYPES = {1, 4, 7, 8, 9, 10, 12, 29, 31, 32, 44, 48, 50, 64, 65, 66}
 # recordType 30 (sensor cerrada) is always ignored, excluded from _ALL_KNOWN_TYPES
 
 _RECORD_TYPE_NAMES = {
@@ -21,19 +21,22 @@ _RECORD_TYPE_NAMES = {
     12: "Gateway",
     29: "Fuerza aplicada a la cerradura",
     31: "Sensor de puerta — abierta",
+    32: "Desde adentro",
     44: "Alerta de manipulación",
     48: "Sistema bloqueado",
+    50: "Alta temperatura",
     64: "Alarma puerta sin cerrar",
     65: "Falló al abrir",
     66: "Falló al cerrar",
 }
 
 _RECORD_TYPE_EMOJIS = {
-    1: "🔓", 4: "🔓", 7: "🔓", 8: "🔓", 9: "🔓", 10: "🔓", 12: "🔓",
+    1: "🔓", 4: "🔓", 7: "🔓", 8: "🔓", 9: "🔓", 10: "🔓", 12: "🔓", 32: "🔓",
     29: "🚨",
     31: "🚪",
     44: "🚨",
     48: "🔒",
+    50: "🌡️",
     64: "⚠️",
     65: "⚠️",
     66: "⚠️",

@@ -77,6 +77,8 @@ ttlock-alert/
 ├── camera.py                ← captura de frame RTSP vía ffmpeg
 ├── wa_sender.py             ← cliente HTTP para wa-gateway + email fallback
 ├── health_monitor.py        ← reporte diario, batería, comandos WhatsApp
+├── ttlock_tools.py          ← diagnóstico CLI (locks, Vercel, WhatsApp)
+├── setup-ttlockalert.bat    ← panel de control: servicio NSSM + diagnóstico
 │
 ├── logs/
 │   └── ttlock-alert.log     ← log principal (NO en GitHub)
@@ -134,13 +136,15 @@ Clase `TTLockMonitor`:
 | 29 | Fuerza aplicada a la cerradura | critico |
 | 30 | Sensor de puerta — cerrada | *(siempre ignorado)* |
 | 31 | Sensor de puerta — abierta | alto |
+| 32 | Abierta desde adentro | normal |
 | 44 | Alerta de manipulación (tamper) | critico |
 | 48 | Sistema bloqueado (intentos fallidos) | critico |
+| 50 | Desbloqueado por alta temperatura | critico |
 | 64 | Alarma puerta sin cerrar | alto |
 | 65 | Falló al abrir | alto |
 | 66 | Falló al cerrar | normal |
 
-Cualquier unlock (`recordType` 1,4,7,8,9,10,12) con `success == 0` se reclasifica automáticamente a nivel `alto`. Todos los demás `recordType` desconocidos se ignoran silenciosamente.
+Cualquier unlock (`recordType` 1,4,7,8,9,10,12,32) con `success == 0` se reclasifica automáticamente a nivel `alto`. Todos los demás `recordType` desconocidos se ignoran silenciosamente.
 
 - `get_event_action(level)`: lee `config.ttlock.event_levels[level]` y retorna `(should_notify: bool, should_send_photo: bool)`. Si el nivel no está en la config, retorna `(True, False)` con WARNING. Permite controlar por nivel si se envía notificación y si se adjunta foto, sin tocar código.
 - `get_battery()`: retorna el último nivel de batería conocido (`electricQuantity` del último evento recibido), o `-1` si no se ha recibido ningún evento desde el arranque. Valor en memoria — se pierde al reiniciar.
@@ -519,6 +523,24 @@ Nivel por debajo del umbral configurado (30%).
 Los contadores se resetean automáticamente a `0` cuando cambia la fecha del sistema (no al medianoche exacto, sino en el siguiente ciclo del loop que detecte el cambio de día).
 
 El historial guarda las **últimas 3 aperturas exitosas** con usuario, método de acceso y fecha/hora, accesibles vía `TT HISTORIAL` o `TT ESTADO`.
+
+---
+
+## Panel de control — setup-ttlockalert.bat
+
+El archivo `setup-ttlockalert.bat` reúne todas las operaciones en un menú interactivo. Ejecutar con doble clic (para instalar el servicio, hacerlo como Administrador).
+
+| Opción | Descripción |
+|---|---|
+| `[1] Verificar token` | Muestra si el cache OAuth2 existe y cuántos días le quedan |
+| `[2] Instalar servicio` | Verifica requisitos, instala dependencias Python y configura NSSM autostart |
+| `[3-5] Iniciar / Detener / Reiniciar` | Control del servicio Windows vía NSSM |
+| `[6] Ver log en tiempo real` | `Get-Content logs\ttlock-alert.log -Wait -Tail 50` |
+| `[7] Consultar cerraduras` | Lista todos los `lockId` vinculados a la cuenta TTLock (con batería y si tienen gateway) |
+| `[8] Verificar Vercel Relay` | Llama al endpoint `/api/ttlock-events` y muestra eventos pendientes en cola |
+| `[9] Enviar evento de prueba` | Simula una apertura (recordType=1) hacia el webhook de Vercel y verifica que el evento quedó en la cola Redis |
+
+Todos los datos (credenciales, URLs, destinatarios) se leen desde `config.yaml`.
 
 ---
 

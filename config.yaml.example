@@ -27,8 +27,10 @@ ttlock:
   # 29         | Fuerza aplicada a la cerradura           | critico
   # 30         | Sensor de puerta — cerrada               | (ignorado)
   # 31         | Sensor de puerta — abierta               | alto
+  # 32         | Abierta desde adentro                    | normal
   # 44         | Alerta de manipulación (tamper)          | critico
   # 48         | Sistema bloqueado (intentos fallidos)    | critico
+  # 50         | Desbloqueado por alta temperatura        | critico
   # 64         | Alarma puerta sin cerrar                 | alto
   # 65         | Falló al abrir                           | alto
   # 66         | Falló al cerrar                          | normal
