@@ -211,10 +211,18 @@ def cmd_test_webhook(tt: dict) -> None:
         print("  Webhook:  OK — respondio 'success'")
     else:
         print(f"  Webhook respondio: {response_body!r}  (esperado: 'success')")
+        return
 
-    # Paso 2 — verificar que quedo en la cola Redis
+    # Paso 2 — esperar un ciclo de polling para que el servicio consuma el evento
     print()
-    print("  Verificando cola en Upstash Redis...")
+    print("  Esperando 7s para que el servicio procese el evento...")
+    for i in range(7, 0, -1):
+        print(f"  {i}...", end="\r", flush=True)
+        time.sleep(1)
+    print("                ")
+
+    # Paso 3 — verificar si el servicio consumio el evento
+    print("  Consultando cola Upstash Redis...")
 
     events_url = f"{vercel_url}/api/ttlock-events"
     req2 = urllib.request.Request(events_url, headers={"x-api-key": api_key})
@@ -228,19 +236,22 @@ def cmd_test_webhook(tt: dict) -> None:
     events = data.get("events", [])
     found  = any(e.get("username") == "prueba-setup" for e in events)
 
-    if found:
-        print(f"  [OK] Evento encontrado en cola ({len(events)} evento(s) en total).")
+    print()
+    if not found and len(events) == 0:
+        print("  Cola vacia: el servicio consumio el evento correctamente.")
         print()
-        print("  Flujo  TTLock Cloud → Vercel Webhook → Upstash Redis: OK")
-        print("  El servicio TTLock Alert consumira este evento en el proximo ciclo.")
+        print("  Flujo completo OK:  TTLock Cloud → Vercel → Redis → TTLock Alert")
+        print("  Revisa WhatsApp — el mensaje de prueba debio haber llegado.")
+    elif not found:
+        print(f"  Evento de prueba no encontrado ({len(events)} otro(s) en cola).")
+        print("  El servicio puede haberlo consumido ya. Revisa WhatsApp.")
     else:
-        print(f"  Cola consultada: {len(events)} evento(s) — evento de prueba no encontrado.")
+        print(f"  [!] Evento aun en cola tras 7s ({len(events)} evento(s)).")
         print()
-        if len(events) == 0:
-            print("  Si el servicio TTLock Alert esta corriendo, ya consumio el evento")
-            print("  antes de esta consulta — eso indica que el flujo esta funcionando.")
-        else:
-            print("  Habia otros eventos; el de prueba puede haber sido consumido ya.")
+        print("  Posibles causas:")
+        print("    - El servicio TTLock Alert no esta corriendo")
+        print("    - El servicio no puede contactar Vercel (revisa el log)")
+        print("    - El intervalo de polling es mayor a 7s (revisa polling_interval)")
 
 
 # ------------------------------------------------------------------

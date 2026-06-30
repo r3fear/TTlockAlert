@@ -188,7 +188,7 @@ class TTLockMonitor:
             logger.error("Vercel relay HTTP %d: %s", e.code, e.read().decode(errors="replace"))
             return []
         except Exception as e:
-            logger.debug("Vercel relay poll error: %s", e)
+            logger.warning("Vercel relay poll error: %s", e)
             return []
 
     # ------------------------------------------------------------------

@@ -299,15 +299,16 @@ echo  ============================================================
 echo     Log en tiempo real  --  Ctrl+C para salir
 echo  ============================================================
 echo.
-set "LOG_PATH=%~dp0logs\ttlock-alert.log"
-if not exist "%LOG_PATH%" (
-    echo   [!] El archivo de log no existe todavia.
-    echo       Inicia el servicio primero (opcion 3).
-    echo.
-    pause
-    goto MENU
-)
-powershell -NoProfile -Command "Get-Content -Wait -Tail 50 -Path '%LOG_PATH%'"
+if not exist "logs\ttlock-alert.log" goto LOG_NO_EXISTE
+echo Get-Content 'logs\ttlock-alert.log' -Wait -Tail 50 > "%TEMP%\ttlocktail.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\ttlocktail.ps1"
+del "%TEMP%\ttlocktail.ps1" 2>nul
+goto MENU
+:LOG_NO_EXISTE
+echo   [!] El archivo de log no existe todavia.
+echo       Inicia el servicio primero (opcion 3).
+echo.
+pause
 goto MENU
 
 :: ================================================================
