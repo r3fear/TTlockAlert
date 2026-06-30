@@ -142,10 +142,11 @@ Todos los demás `recordType` se ignoran silenciosamente.
 Clase `WhatsAppSender`. Usa exclusivamente `urllib.request` de la stdlib (sin dependencias externas).
 
 - `is_gateway_alive()`: `GET /status`; retorna `True` solo si la respuesta contiene `ok: true` **y** `connected: true`.
+- `register_consumer()`: `POST /register-consumer` con `{"consumer": "ttlockalert"}` — registra el proyecto en el sistema de consumers de wa-gateway para tener una cola de inbox dedicada e independiente de otros proyectos. Retorna `True` si ok. Loguea `INFO` si exitoso, `WARNING` si falla (no es crítico).
 - `send_alert(message, image_path)`: broadcast a todos los recipients configurados que no estén vacíos. Si la conexión falla a nivel HTTP (proceso caído, timeout, error de red) y ningún recipient tuvo éxito, activa `send_email_fallback`. **No activa fallback por errores HTTP 4xx/5xx del gateway.**
 - `send_direct(to, message, image_path)`: envía a un destinatario específico (número o JID). Usado para responder comandos de WhatsApp — no hace broadcast ni activa fallback de email.
 - `send_email_fallback(message, image_path)`: SMTP Gmail con `starttls`. **Este método solo debe llamarse cuando wa-gateway no responde en HTTP (proceso caído). Las alertas de desconexión interna de WhatsApp las gestiona wa-gateway internamente.** Adjunta imagen como `MIMEImage` si el archivo existe en disco.
-- `poll_inbox()`: `GET /inbox` — retorna lista de mensajes entrantes y vacía la cola.
+- `poll_inbox()`: `GET /inbox?consumer=ttlockalert` — retorna y vacía la cola de mensajes del consumer `ttlockalert`. Si wa-gateway fue reiniciado y perdió el registro, detecta el error `ok: false` y llama automáticamente a `register_consumer()` reintentando una vez.
 - `build_open_message(username, keyboard_pwd, record_type_name, fecha, battery)`: formatea mensaje de apertura con emoji.
 - `build_failed_message(username, fecha)`: mensaje de intento fallido.
 - `build_forced_message(fecha, battery)`: mensaje de puerta forzada (alerta crítica).
@@ -555,6 +556,8 @@ Instalar: `py -m pip install -r requirements.txt`
 - `capture_on_open` solo aplica a aperturas exitosas: `success == 1` y `recordType` en `{1, 4, 7, 8}` — nunca captura en intentos fallidos (recordType 9), puerta forzada (10) ni batería baja (11)
 - `recordType 10` (puerta forzada) tiene prioridad `critical` y es **nunca silenciable** — el callback en `main.py` ignora `is_silenced()` para esta prioridad
 - `process_command()` ignora silenciosamente mensajes sin prefijo `"TT "` — diseño intencional para coexistir con RingAlert u otros servicios que compartan el mismo inbox de wa-gateway
+- `poll_inbox()` usa `GET /inbox?consumer=ttlockalert` (no la cola global) — el consumer name es fijo en el código; si wa-gateway se reinicia y pierde el registro, `poll_inbox()` lo detecta (`ok: false` con error de "no registrado") y llama a `register_consumer()` automáticamente antes de reintentar
+- `register_consumer()` se llama al arrancar `main.py` solo si wa-gateway está disponible; si falla no es fatal — el auto-retry en `poll_inbox()` lo recupera en el siguiente ciclo de 5s
 - `check_gateway_health()` **solo loguea** las transiciones de estado — wa-gateway gestiona sus propios emails de alerta por desconexión/reconexión interna de WhatsApp
 - `send_email_fallback()` solo se activa cuando wa-gateway no responde en HTTP (proceso caído); los errores internos de WhatsApp (sesión caída, desconexión) los gestiona wa-gateway con su propio mecanismo de email
 - `battery_alert_threshold` es configurable en `config.yaml`; la alerta se envía máximo una vez cada 24 horas aunque la batería siga baja

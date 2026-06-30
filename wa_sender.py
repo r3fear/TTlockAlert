@@ -32,6 +32,27 @@ class WhatsAppSender:
             logger.debug("Gateway status check failed: %s", e)
             return False
 
+    def register_consumer(self) -> bool:
+        """POST /register-consumer — registers this project as a dedicated inbox consumer."""
+        payload = json.dumps({"consumer": "ttlockalert"}).encode()
+        req = urllib.request.Request(
+            f"{self._base_url}/register-consumer",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                if data.get("ok"):
+                    logger.info("Consumer 'ttlockalert' registered (queued: %d)", data.get("queued", 0))
+                    return True
+                logger.warning("register_consumer failed: %s", data.get("error", "unknown"))
+                return False
+        except Exception as e:
+            logger.warning("register_consumer error: %s", e)
+            return False
+
     # ------------------------------------------------------------------
     # Sending
     # ------------------------------------------------------------------
@@ -109,14 +130,30 @@ class WhatsAppSender:
     # ------------------------------------------------------------------
 
     def poll_inbox(self) -> list:
-        """GET /inbox — returns message list and empties the queue."""
+        """GET /inbox?consumer=ttlockalert — returns and empties the dedicated consumer queue.
+
+        Auto-re-registers the consumer if wa-gateway was restarted and lost the registration.
+        """
+        return self._do_poll_inbox(retry=True)
+
+    def _do_poll_inbox(self, retry: bool) -> list:
         try:
-            with urllib.request.urlopen(f"{self._base_url}/inbox", timeout=10) as resp:
+            with urllib.request.urlopen(
+                f"{self._base_url}/inbox?consumer=ttlockalert", timeout=10
+            ) as resp:
                 data = json.loads(resp.read())
-                return data.get("messages", [])
         except Exception as e:
             logger.debug("poll_inbox error: %s", e)
             return []
+        if not data.get("ok"):
+            error = data.get("error", "")
+            if retry and "registrado" in error.lower():
+                logger.warning("Consumer 'ttlockalert' not registered — re-registering and retrying")
+                self.register_consumer()
+                return self._do_poll_inbox(retry=False)
+            logger.debug("poll_inbox returned ok=false: %s", error)
+            return []
+        return data.get("messages", [])
 
     # ------------------------------------------------------------------
     # Email fallback (only when wa-gateway process is down)

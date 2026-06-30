@@ -55,6 +55,7 @@ async def main() -> None:
     alive = wa.is_gateway_alive()
     if alive:
         logger.info("wa-gateway: connected")
+        wa.register_consumer()
     else:
         logger.warning("wa-gateway: not reachable at startup — notifications will fall back to email")
 
