@@ -12,18 +12,28 @@ from camera import capture_frame, get_photo_path
 
 logger = logging.getLogger("ttlock_monitor")
 
-# recordType → (display name, category)
-_RECORD_TYPES = {
-    1:  ("App Bluetooth",     "open"),
-    4:  ("Código numérico",   "open"),
-    7:  ("Huella digital",    "open"),
-    8:  ("Tarjeta IC",        "open"),
-    9:  ("Código incorrecto", "failed"),
-    10: ("Puerta forzada",    "forced"),
-    11: ("Batería baja",      "battery"),
+# recordType → (base_level, display_name)
+# base_level: "normal" | "alto" | "critico" | None (always ignore)
+RECORD_TYPE_LEVELS = {
+    1:  ("normal",  "App"),
+    4:  ("normal",  "Código numérico"),
+    7:  ("normal",  "Tarjeta IC"),
+    8:  ("normal",  "Huella digital"),
+    9:  ("normal",  "Pulsera"),
+    10: ("normal",  "Llave mecánica"),
+    12: ("normal",  "Gateway"),
+    29: ("critico", "Fuerza aplicada a la cerradura"),
+    30: (None,      "Sensor de puerta — cerrada"),
+    31: ("alto",    "Sensor de puerta — abierta"),
+    44: ("critico", "Alerta de manipulación"),
+    48: ("critico", "Sistema bloqueado"),
+    64: ("alto",    "Alarma puerta sin cerrar"),
+    65: ("alto",    "Falló al abrir"),
+    66: ("normal",  "Falló al cerrar"),
 }
 
-_OPEN_TYPES = {1, 4, 7, 8}
+# Unlock methods — success=0 on any of these is reclassified to "alto"
+UNLOCK_TYPES = {1, 4, 7, 8, 9, 10, 12}
 
 
 class TTLockMonitor:
@@ -48,6 +58,7 @@ class TTLockMonitor:
 
         self._cam_cfg = config.get("camera", {})
         self._storage_cfg = config.get("storage", {})
+        self._event_levels_cfg = tt.get("event_levels", {})
 
         self._callback = event_callback
         self._running = False
@@ -189,58 +200,102 @@ class TTLockMonitor:
         except Exception:
             return str(lock_date)
 
-    def _build_message(self, event: dict, type_name: str, category: str) -> str:
+    def get_event_action(self, level: str) -> tuple:
+        """Return (should_notify, should_send_photo) from event_levels config."""
+        cfg = self._event_levels_cfg.get(level)
+        if not cfg or len(cfg) < 2:
+            logger.warning(
+                "event_levels.%s not configured — defaulting to notify=True, photo=False", level
+            )
+            return (True, False)
+        return (bool(cfg[0]), bool(cfg[1]))
+
+    def _build_message(self, event: dict, type_name: str, level: str) -> str:
+        record_type = int(event.get("recordType", -1))
         username = event.get("username", "")
         keyboard_pwd = event.get("keyboardPwd", "")
         fecha = self._format_date(event.get("lockDate", 0))
-        battery = self._battery
         name = self._lock_name
+        battery = self._battery
 
-        if category == "open":
+        if record_type in UNLOCK_TYPES and int(event.get("success", 1)) == 1:
             lines = [f"🔓 {name} — Puerta abierta", f"Método: {type_name}"]
             if username:
                 lines.append(f"Usuario: {username}")
             if keyboard_pwd:
                 lines.append(f"Clave: {keyboard_pwd}")
             lines += [f"Hora: {fecha}", f"Batería: {battery}%"]
+            return "\n".join(lines)
 
-        elif category == "failed":
-            lines = [f"⚠️ {name} — Intento fallido de acceso", f"Hora: {fecha}"]
+        if record_type in UNLOCK_TYPES:  # success == 0
+            lines = [f"⚠️ {name} — Falló al abrir ({type_name})", f"Hora: {fecha}"]
             if username:
                 lines.append(f"Usuario: {username}")
+            return "\n".join(lines)
 
-        elif category == "forced":
-            lines = [f"🚨 ALERTA: {name} — Puerta forzada", f"Hora: {fecha}", f"Batería: {battery}%"]
+        if record_type == 29:
+            return "\n".join([
+                f"🚨 FUERZA DETECTADA — {name}",
+                f"Hora: {fecha}",
+                f"Batería: {battery}%",
+            ])
+        if record_type == 31:
+            return "\n".join([f"🚪 {name} — Sensor: puerta abierta", f"Hora: {fecha}"])
+        if record_type == 44:
+            return "\n".join([
+                f"🚨 ALERTA DE MANIPULACIÓN — {name}",
+                f"Hora: {fecha}",
+                f"Batería: {battery}%",
+            ])
+        if record_type == 48:
+            return "\n".join([
+                f"🔒 {name} — Sistema bloqueado por múltiples intentos fallidos",
+                f"Hora: {fecha}",
+            ])
+        if record_type == 64:
+            return "\n".join([f"⚠️ {name} — Puerta sin cerrar — alarma activada", f"Hora: {fecha}"])
+        if record_type == 65:
+            return "\n".join([f"⚠️ {name} — Falló al abrir", f"Hora: {fecha}"])
+        if record_type == 66:
+            return "\n".join([f"⚠️ {name} — Falló al cerrar", f"Hora: {fecha}"])
 
-        elif category == "battery":
-            lines = [f"🔋 {name} — Batería baja: {battery}%", f"Hora: {fecha}"]
-
-        else:
-            lines = [f"{name} — {type_name}", f"Hora: {fecha}"]
-
-        return "\n".join(lines)
+        return "\n".join([f"{name} — {type_name}", f"Hora: {fecha}"])
 
     async def _process_event(self, event: dict) -> None:
         record_type = int(event.get("recordType", -1))
-        if record_type not in _RECORD_TYPES:
+
+        if record_type not in RECORD_TYPE_LEVELS:
             logger.debug("Ignoring unknown recordType %d", record_type)
             return
 
-        type_name, category = _RECORD_TYPES[record_type]
+        base_level, type_name = RECORD_TYPE_LEVELS[record_type]
+
+        if base_level is None:
+            logger.debug("Ignoring recordType %d (%s)", record_type, type_name)
+            return
 
         battery = event.get("electricQuantity")
         if battery is not None:
             self._battery = int(battery)
 
-        priority = "critical" if category == "forced" else "high" if category == "failed" else "normal"
+        success = int(event.get("success", 1))
+        level = "alto" if (record_type in UNLOCK_TYPES and success == 0) else base_level
 
-        message = self._build_message(event, type_name, category)
+        should_notify, should_send_photo = self.get_event_action(level)
+
+        if not should_notify:
+            logger.info(
+                "Event recordType=%d (%s) level=%s suppressed by event_levels config",
+                record_type, type_name, level,
+            )
+            await self._callback("", "", level, event)
+            return
+
+        message = self._build_message(event, type_name, level)
         image_path = ""
 
-        # Capture photo only on successful open events
-        capture_on_open = self._cam_cfg.get("capture_on_open", True)
-        is_open_success = record_type in _OPEN_TYPES and int(event.get("success", 0)) == 1
-        if capture_on_open and is_open_success:
+        is_unlock_success = record_type in UNLOCK_TYPES and success == 1
+        if should_send_photo and is_unlock_success:
             rtsp_url = self._cam_cfg.get("rtsp_url", "")
             ffmpeg_path = self._cam_cfg.get("ffmpeg_path", "ffmpeg")
             if rtsp_url:
@@ -250,18 +305,15 @@ class TTLockMonitor:
                 if ok:
                     image_path = output_path
             else:
-                logger.warning("capture_on_open is true but camera.rtsp_url is not set")
+                logger.warning("Photo requested but camera.rtsp_url is not set")
 
         logger.info(
-            "Event recordType=%d (%s) success=%s priority=%s battery=%s photo=%s",
-            record_type,
-            type_name,
-            event.get("success"),
-            priority,
+            "Event recordType=%d (%s) success=%s level=%s battery=%s photo=%s",
+            record_type, type_name, event.get("success"), level,
             f"{self._battery}%" if self._battery >= 0 else "?",
             image_path or "none",
         )
-        await self._callback(message, image_path, priority, event)
+        await self._callback(message, image_path, level, event)
 
     # ------------------------------------------------------------------
     # Public API

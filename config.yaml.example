@@ -12,6 +12,36 @@ ttlock:
   token_file: "ttlock_token.cache"
   battery_alert_threshold: 30
 
+  # ──────────────────────────────────────────────────────
+  # Tabla de referencia — recordType (TTLock Cloud API)
+  # ──────────────────────────────────────────────────────
+  # recordType | Descripción                              | Nivel
+  # -----------|------------------------------------------|----------
+  # 1          | Unlock by app                            | normal
+  # 4          | Unlock by passcode                       | normal
+  # 7          | Unlock by IC card                        | normal
+  # 8          | Unlock by fingerprint                    | normal
+  # 9          | Unlock by wrist strap                    | normal
+  # 10         | Unlock by mechanical key                 | normal
+  # 12         | Unlock by gateway                        | normal
+  # 29         | Fuerza aplicada a la cerradura           | critico
+  # 30         | Sensor de puerta — cerrada               | (ignorado)
+  # 31         | Sensor de puerta — abierta               | alto
+  # 44         | Alerta de manipulación (tamper)          | critico
+  # 48         | Sistema bloqueado (intentos fallidos)    | critico
+  # 64         | Alarma puerta sin cerrar                 | alto
+  # 65         | Falló al abrir                           | alto
+  # 66         | Falló al cerrar                          | normal
+  #
+  # Nota: cualquier unlock (1,4,7,8,9,10,12) con success=0
+  # se reclasifica automáticamente a nivel "alto"
+  # ──────────────────────────────────────────────────────
+  event_levels:
+    informativo: [0, 0]
+    normal:      [1, 0]
+    alto:        [1, 1]
+    critico:     [1, 1]
+
 camera:
   rtsp_url: "rtsp://usuario:password@IP:554/ch02/0"
   ffmpeg_path: "ffmpeg"

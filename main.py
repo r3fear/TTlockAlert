@@ -63,14 +63,15 @@ async def main() -> None:
     # health is assigned after on_ttlock_event is defined; the closure captures it
     # by reference so it will be fully initialized by the time any event arrives.
     async def on_ttlock_event(message: str, image_path: str, priority: str, event: dict) -> None:
-        if priority == "critical":
-            # Forced-door events are never silenceable
-            wa.send_alert(message, image_path)
-        else:
-            if health.is_silenced():
-                logger.info("Alert suppressed (silenced): priority=%s", priority)
-            else:
+        if message:
+            if priority == "critico":
+                # "critico" events are never silenceable
                 wa.send_alert(message, image_path)
+            else:
+                if health.is_silenced():
+                    logger.info("Alert suppressed (silenced): priority=%s", priority)
+                else:
+                    wa.send_alert(message, image_path)
         health.register_event(event)
 
     ttlock = TTLockMonitor(config, on_ttlock_event)

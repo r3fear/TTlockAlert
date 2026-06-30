@@ -239,6 +239,41 @@ class WhatsAppSender:
             f"Batería: {battery}%",
         ])
 
+    def build_force_message(self, fecha: str, battery: int) -> str:
+        return "\n".join([
+            "🚨 FUERZA DETECTADA EN LA CERRADURA",
+            f"Hora: {fecha}",
+            f"Batería: {battery}%",
+        ])
+
+    def build_tamper_message(self, fecha: str, battery: int) -> str:
+        return "\n".join([
+            "🚨 ALERTA DE MANIPULACIÓN",
+            f"Hora: {fecha}",
+            f"Batería: {battery}%",
+        ])
+
+    def build_system_locked_message(self, fecha: str) -> str:
+        return "\n".join([
+            "🔒 Sistema bloqueado por múltiples intentos fallidos",
+            f"Hora: {fecha}",
+        ])
+
+    def build_door_alarm_message(self, fecha: str) -> str:
+        return "\n".join([
+            "⚠️ Puerta sin cerrar — alarma activada",
+            f"Hora: {fecha}",
+        ])
+
+    def build_failed_open_message(self, username: str, method_name: str, fecha: str) -> str:
+        lines = [
+            f"⚠️ Falló al abrir ({method_name})",
+            f"Hora: {fecha}",
+        ]
+        if username:
+            lines.append(f"Usuario: {username}")
+        return "\n".join(lines)
+
 
 # ------------------------------------------------------------------
 # CLI test

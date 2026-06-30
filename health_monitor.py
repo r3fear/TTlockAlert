@@ -7,24 +7,36 @@ from datetime import datetime
 
 logger = logging.getLogger("health_monitor")
 
-_OPEN_TYPES = {1, 4, 7, 8}
-_ALL_KNOWN_TYPES = {1, 4, 7, 8, 9, 10, 11}
+_UNLOCK_TYPES = {1, 4, 7, 8, 9, 10, 12}
+_ALL_KNOWN_TYPES = {1, 4, 7, 8, 9, 10, 12, 29, 31, 44, 48, 64, 65, 66}
+# recordType 30 (sensor cerrada) is always ignored, excluded from _ALL_KNOWN_TYPES
 
 _RECORD_TYPE_NAMES = {
-    1:  "App Bluetooth",
+    1:  "App",
     4:  "Código numérico",
-    7:  "Huella digital",
-    8:  "Tarjeta IC",
-    9:  "Código incorrecto",
-    10: "Puerta forzada",
-    11: "Batería baja",
+    7:  "Tarjeta IC",
+    8:  "Huella digital",
+    9:  "Pulsera",
+    10: "Llave mecánica",
+    12: "Gateway",
+    29: "Fuerza aplicada a la cerradura",
+    31: "Sensor de puerta — abierta",
+    44: "Alerta de manipulación",
+    48: "Sistema bloqueado",
+    64: "Alarma puerta sin cerrar",
+    65: "Falló al abrir",
+    66: "Falló al cerrar",
 }
 
 _RECORD_TYPE_EMOJIS = {
-    1: "🔓", 4: "🔓", 7: "🔓", 8: "🔓",
-    9: "⚠️",
-    10: "🚨",
-    11: "🔋",
+    1: "🔓", 4: "🔓", 7: "🔓", 8: "🔓", 9: "🔓", 10: "🔓", 12: "🔓",
+    29: "🚨",
+    31: "🚪",
+    44: "🚨",
+    48: "🔒",
+    64: "⚠️",
+    65: "⚠️",
+    66: "⚠️",
 }
 
 
@@ -160,11 +172,13 @@ class HealthMonitor:
         if today_records is not None:
             openings = sum(
                 1 for r in today_records
-                if int(r.get("recordType", -1)) in _OPEN_TYPES and int(r.get("success", 0)) == 1
+                if int(r.get("recordType", -1)) in _UNLOCK_TYPES and int(r.get("success", 0)) == 1
             )
             failures = sum(
                 1 for r in today_records
-                if int(r.get("recordType", -1)) == 9
+                if (
+                    int(r.get("recordType", -1)) in _UNLOCK_TYPES and int(r.get("success", 0)) == 0
+                ) or int(r.get("recordType", -1)) in {48, 65}
             )
             suffix = ""
         else:
@@ -242,7 +256,7 @@ class HealthMonitor:
         except Exception:
             date_str = "?"
 
-        if record_type in _OPEN_TYPES and int(event.get("success", 0)) == 1:
+        if record_type in _UNLOCK_TYPES and int(event.get("success", 1)) == 1:
             self._openings_today_count += 1
             self._last_openings.insert(0, {
                 "username": event.get("username", ""),
@@ -251,7 +265,7 @@ class HealthMonitor:
             })
             self._last_openings = self._last_openings[:3]
 
-        elif record_type == 9:
+        elif (record_type in _UNLOCK_TYPES and int(event.get("success", 1)) == 0) or record_type in {48, 65}:
             self._failed_today_count += 1
 
         if record_type in _ALL_KNOWN_TYPES:

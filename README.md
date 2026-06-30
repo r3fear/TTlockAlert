@@ -102,7 +102,7 @@ ttlock-alert/
 Punto de entrada. Orquesta todos los módulos con `asyncio.gather`. Contiene:
 
 - `setup_logging()`: configura log a archivo `logs/ttlock-alert.log` y a consola simultáneamente. Formato: `YYYY-MM-DD HH:MM:SS - LEVEL - mensaje`, encoding UTF-8. Crea la carpeta `logs/` si no existe.
-- `on_ttlock_event(message, image_path, priority, event)`: callback que recibe cada evento de `TTLockMonitor`. Prioridades: `critical` siempre envía (nunca silenciable); `high` y `normal` respetan `is_silenced()`. Llama a `health_monitor.register_event(event)` en todos los casos.
+- `on_ttlock_event(message, image_path, priority, event)`: callback que recibe cada evento de `TTLockMonitor`. Niveles: `critico` siempre envía (nunca silenciable); `alto` y `normal` respetan `is_silenced()`. Si `message` es vacío, el evento fue suprimido por `event_levels` config — omite `send_alert` pero siempre llama `health_monitor.register_event(event)`.
 - `poll_inbox()`: loop cada 5 segundos que hace `GET /inbox` a wa-gateway y pasa cada mensaje a `health_monitor.process_command()`.
 - Al arrancar: verifica disponibilidad de wa-gateway y loguea el resultado.
 
@@ -122,24 +122,33 @@ Clase `TTLockMonitor`:
 
 **recordType soportados:**
 
-| recordType | Descripción | Prioridad |
+| recordType | Descripción | Nivel base |
 |---|---|---|
-| 1 | App Bluetooth | normal |
-| 4 | Código numérico | normal |
-| 7 | Huella digital | normal |
-| 8 | Tarjeta IC | normal |
-| 9 | Código incorrecto | high |
-| 10 | Puerta forzada | critical |
-| 11 | Batería baja | normal |
+| 1 | Unlock by app | normal |
+| 4 | Unlock by passcode | normal |
+| 7 | Unlock by IC card | normal |
+| 8 | Unlock by fingerprint | normal |
+| 9 | Unlock by wrist strap | normal |
+| 10 | Unlock by mechanical key | normal |
+| 12 | Unlock by gateway | normal |
+| 29 | Fuerza aplicada a la cerradura | critico |
+| 30 | Sensor de puerta — cerrada | *(siempre ignorado)* |
+| 31 | Sensor de puerta — abierta | alto |
+| 44 | Alerta de manipulación (tamper) | critico |
+| 48 | Sistema bloqueado (intentos fallidos) | critico |
+| 64 | Alarma puerta sin cerrar | alto |
+| 65 | Falló al abrir | alto |
+| 66 | Falló al cerrar | normal |
 
-Todos los demás `recordType` se ignoran silenciosamente.
+Cualquier unlock (`recordType` 1,4,7,8,9,10,12) con `success == 0` se reclasifica automáticamente a nivel `alto`. Todos los demás `recordType` desconocidos se ignoran silenciosamente.
 
+- `get_event_action(level)`: lee `config.ttlock.event_levels[level]` y retorna `(should_notify: bool, should_send_photo: bool)`. Si el nivel no está en la config, retorna `(True, False)` con WARNING. Permite controlar por nivel si se envía notificación y si se adjunta foto, sin tocar código.
 - `get_battery()`: retorna el último nivel de batería conocido (`electricQuantity` del último evento recibido), o `-1` si no se ha recibido ningún evento desde el arranque. Valor en memoria — se pierde al reiniciar.
 - `get_lock_detail()`: `GET /v3/lock/detail` — consulta la API de TTLock en tiempo real. Retorna dict con al menos `electricQuantity` y `lockAlias`. Retorna `{}` ante cualquier error. Llama a `_ensure_token()` internamente.
 - `get_last_record()`: `GET /v3/lockRecord/list?pageSize=1` — retorna el registro de acceso más reciente directamente desde la API (campos: `username`, `keyboardPwd`, `recordType`, `lockDate`, `success`). Retorna `{}` si la lista está vacía o hay error.
 - `get_recent_records(count=3)`: `GET /v3/lockRecord/list?pageSize=count` — retorna los `count` registros más recientes de cualquier tipo sin filtrar. Retorna lista en éxito, `None` en error. Usado por `TT HISTORIAL`.
 - `get_today_records()`: `GET /v3/lockRecord/list` con `startDate=medianoche` y `endDate=ahora` — pagina automáticamente (pageSize=100) hasta obtener todos los registros del día. Retorna lista (posiblemente vacía) si la API responde, o `None` si hay error — distinción necesaria para que el reporte diario sepa si caer al fallback en memoria.
-- La foto se captura únicamente en aperturas exitosas: `success == 1` y `recordType` en `{1, 4, 7, 8}`. No se captura en intentos fallidos, puerta forzada ni batería baja.
+- La foto se captura únicamente cuando `should_send_photo == True` (de `get_event_action`) **y** el evento es un unlock exitoso (`success == 1`).
 
 ### `wa_sender.py`
 
@@ -151,9 +160,13 @@ Clase `WhatsAppSender`. Usa exclusivamente `urllib.request` de la stdlib (sin de
 - `send_direct(to, message, image_path)`: envía a un destinatario específico (número o JID). Usado para responder comandos de WhatsApp — no hace broadcast ni activa fallback de email.
 - `send_email_fallback(message, image_path)`: SMTP Gmail con `starttls`. **Este método solo debe llamarse cuando wa-gateway no responde en HTTP (proceso caído). Las alertas de desconexión interna de WhatsApp las gestiona wa-gateway internamente.** Adjunta imagen como `MIMEImage` si el archivo existe en disco.
 - `poll_inbox()`: `GET /inbox?consumer=ttlockalert` — retorna y vacía la cola de mensajes del consumer `ttlockalert`. Si wa-gateway fue reiniciado y perdió el registro, detecta el error `ok: false` y llama automáticamente a `register_consumer()` reintentando una vez.
-- `build_open_message(username, keyboard_pwd, record_type_name, fecha, battery)`: formatea mensaje de apertura con emoji.
-- `build_failed_message(username, fecha)`: mensaje de intento fallido.
-- `build_forced_message(fecha, battery)`: mensaje de puerta forzada (alerta crítica).
+- `build_open_message(username, keyboard_pwd, record_type_name, fecha, battery)`: apertura exitosa.
+- `build_failed_message(username, fecha)`: intento fallido genérico (legacy).
+- `build_failed_open_message(username, method_name, fecha)`: falló al abrir con nombre de método.
+- `build_forced_message(fecha, battery)` / `build_force_message(fecha, battery)`: fuerza detectada.
+- `build_tamper_message(fecha, battery)`: alerta de manipulación.
+- `build_system_locked_message(fecha)`: sistema bloqueado por múltiples intentos.
+- `build_door_alarm_message(fecha)`: alarma puerta sin cerrar.
 
 CLI: `py wa_sender.py --test` verifica gateway y envía mensaje al primer recipient. `--test-email` prueba la configuración SMTP directamente.
 
@@ -164,7 +177,7 @@ Clase `HealthMonitor`. Loop cada 60 segundos.
 - `check_gateway_health()`: verifica si wa-gateway responde en HTTP y loguea las transiciones de estado (conectado → desconectado, desconectado → reconectado). **Los emails de alerta por desconexión de WhatsApp los gestiona wa-gateway. Este método solo loguea el estado.**
 - `check_battery()`: consulta `ttlock_monitor.get_battery()`. Si el nivel está por debajo de `battery_alert_threshold` y no se ha enviado alerta en las últimas 24 horas, envía alerta vía `send_alert`.
 - `check_daily_report()`: envía reporte a `daily_report_time` una vez por día si `daily_report_enabled: true`. El reporte incluye batería actual, aperturas del día e intentos fallidos del día. Ejecuta limpieza de fotos antiguas según `retention_days`.
-- `register_event(event)`: registra cada evento entrante. Para aperturas exitosas (`recordType` en `{1,4,7,8}` con `success==1`): incrementa contador diario y actualiza el historial de las últimas 3 aperturas. Para códigos incorrectos (`recordType 9`): incrementa contador de fallos diarios. Los contadores se resetean automáticamente al cambiar el día.
+- `register_event(event)`: registra cada evento entrante. Para unlocks exitosos (`recordType` en `{1,4,7,8,9,10,12}` con `success==1`): incrementa contador diario y actualiza el historial de las últimas 3 aperturas. Para intentos fallidos (unlock con `success==0`, o `recordType` 48/65): incrementa contador de fallos diarios. Los contadores se resetean automáticamente al cambiar el día.
 - `is_silenced()` / `silence(hours)` / `_silence_until`: gestión de silencio temporal.
 - `_is_authorized_sender(sender)`: extrae dígitos del sender y compara contra los `recipients` configurados. Rechaza silenciosamente mensajes de números no autorizados.
 - `process_command(message, sender)`: procesa comandos entrantes de WhatsApp. **Ignora completamente mensajes que no empiecen con `"TT "` — diseño intencional para coexistir con otros servicios (como RingAlert) que compartan el mismo inbox de wa-gateway.** Responde solo al remitente via `send_direct`.
@@ -346,10 +359,18 @@ ttlock:
   token_file: "ttlock_token.cache"    # Ruta del archivo de caché del token (no subir a GitHub)
   battery_alert_threshold: 30         # % de batería por debajo del cual se envía alerta
 
+  # Qué hacer con cada nivel de evento: [notificar, enviar_foto]
+  # 1 = sí, 0 = no. Los niveles son: informativo, normal, alto, critico
+  event_levels:
+    informativo: [0, 0]   # nunca notificar (eventos de bajo interés)
+    normal:      [1, 0]   # notificar sin foto (aperturas exitosas normales)
+    alto:        [1, 1]   # notificar con foto (unlocks fallidos, sensor abierta, alarmas)
+    critico:     [1, 1]   # notificar con foto — SIEMPRE, aunque haya silencio activo
+
 camera:
   rtsp_url: "rtsp://usuario:password@IP:554/ch02/0"  # URL RTSP de la cámara
   ffmpeg_path: "ffmpeg"              # Ruta a ffmpeg o "ffmpeg" si está en PATH
-  capture_on_open: true              # Capturar foto en cada apertura exitosa
+  capture_on_open: true              # (legacy) la foto ahora se controla por event_levels
 
 whatsapp:
   gateway_url: "http://127.0.0.1:3000"  # URL del servicio wa-gateway
@@ -410,11 +431,11 @@ Los datos de batería y último acceso se consultan en tiempo real desde la API 
 📋 Historial — Puerta Principal (últimos 3)
 ━━━━━━━━━━━━━━━━━━━━━
 1. 🔓 Juan (Código numérico) — 29/06/2026 14:32
-2. ⚠️ — (Código incorrecto) — 29/06/2026 14:30
-3. 🔓 Maria (App Bluetooth) — 29/06/2026 09:15
+2. ⚠️ — (Falló al abrir) — 29/06/2026 14:30
+3. 🔓 Maria (App) — 29/06/2026 09:15
 ```
 
-Muestra todos los tipos de evento (aperturas, intentos fallidos, puerta forzada, batería baja). Sin número devuelve los últimos 3; con número devuelve hasta 20. Los registros se consultan en tiempo real desde la API de TTLock. Si la API no responde, usa el historial en memoria con sufijo `(caché)`.
+Muestra todos los tipos de evento registrados. Sin número devuelve los últimos 3; con número devuelve hasta 20. Los registros se consultan en tiempo real desde la API de TTLock. Si la API no responde, usa el historial en memoria con sufijo `(caché)`.
 
 `TT SILENCIAR 2h`
 ```
@@ -426,7 +447,7 @@ Muestra todos los tipos de evento (aperturas, intentos fallidos, puerta forzada,
 🔔 Alertas de Puerta Principal reactivadas.
 ```
 
-> **Nota**: Los eventos `recordType 10` (puerta forzada) son de prioridad crítica y **nunca son silenciables**, independientemente del estado de silencio.
+> **Nota**: Los eventos de nivel `critico` (recordType 29, 44, 48) **nunca son silenciables**, independientemente del estado de silencio.
 
 ---
 
@@ -491,8 +512,8 @@ Nivel por debajo del umbral configurado (30%).
 
 | Condición | Acción |
 |---|---|
-| `recordType` en `{1,4,7,8}` y `success == 1` | Suma 1 a `aperturas_hoy`, guarda en historial |
-| `recordType == 9` (código incorrecto) | Suma 1 a `intentos_fallidos_hoy` |
+| `recordType` en `{1,4,7,8,9,10,12}` y `success == 1` | Suma 1 a `aperturas_hoy`, guarda en historial |
+| `recordType` en `{1,4,7,8,9,10,12}` y `success == 0`, o `recordType` en `{48,65}` | Suma 1 a `intentos_fallidos_hoy` |
 | Cualquier otro | Se ignora para contadores |
 
 Los contadores se resetean automáticamente a `0` cuando cambia la fecha del sistema (no al medianoche exacto, sino en el siguiente ciclo del loop que detecte el cambio de día).
@@ -565,8 +586,13 @@ Instalar: `py -m pip install -r requirements.txt`
 - TTLock Cloud **requiere recibir exactamente el string `success`** (HTTP 200) al webhook o reintentará el POST indefinidamente
 - Upstash Redis guarda cada evento con TTL de 3600 segundos — si el servidor local no los consume dentro de 1 hora, se pierden permanentemente
 - Las variables de Upstash que consume el código son `KV_REST_API_URL` y `KV_REST_API_TOKEN` — estos nombres los inyecta Vercel Marketplace automáticamente; si se conecta Upstash manualmente, mapear los valores de Upstash a estos nombres en Vercel
-- `capture_on_open` solo aplica a aperturas exitosas: `success == 1` y `recordType` en `{1, 4, 7, 8}` — nunca captura en intentos fallidos (recordType 9), puerta forzada (10) ni batería baja (11)
-- `recordType 10` (puerta forzada) tiene prioridad `critical` y es **nunca silenciable** — el callback en `main.py` ignora `is_silenced()` para esta prioridad
+- `RECORD_TYPE_LEVELS` en `ttlock_monitor.py` es una tabla hardcodeada basada en la definición oficial de la TTLock Cloud API — no modificar sin consultar la documentación de TTLock Open Platform, los números de `recordType` son fijos por la API
+- `recordType 30` (sensor de puerta — cerrada) siempre se ignora (`base_level = None`) — no genera notificación ni se registra en el historial
+- `recordType 9` ya no es "Código incorrecto" sino "Pulsera" (wrist strap) según la API de TTLock; la clasificación incorrecta era del código anterior. `recordType 29` es "Fuerza aplicada a la cerradura" (no el 10)
+- Los niveles de evento `"informativo"`, `"normal"`, `"alto"`, `"critico"` son los valores válidos en `event_levels` config y como parámetro `priority` del callback
+- El nivel `"critico"` es **nunca silenciable** — `main.py` ignora `is_silenced()` para `priority == "critico"`
+- Cuando `should_notify` es `False` (nivel suprimido por config), `_process_event` llama igualmente al callback con `message=""` — el callback detecta el string vacío, omite `send_alert` pero sí llama `health.register_event(event)` para mantener los contadores
+- La foto solo se captura si `should_send_photo == True` (de `get_event_action`) **y** el evento es un unlock exitoso (`success == 1`). No se captura en alertas de sensor, fuerza, tamper, etc., aunque `should_send_photo` sea `True` para ese nivel
 - `process_command()` ignora silenciosamente mensajes sin prefijo `"TT "` — diseño intencional para coexistir con RingAlert u otros servicios que compartan el mismo inbox de wa-gateway
 - `poll_inbox()` usa `GET /inbox?consumer=ttlockalert` (no la cola global) — el consumer name es fijo en el código; si wa-gateway se reinicia y pierde el registro, `poll_inbox()` lo detecta (`ok: false` con error de "no registrado") y llama a `register_consumer()` automáticamente antes de reintentar
 - `register_consumer()` se llama al arrancar `main.py` solo si wa-gateway está disponible; si falla no es fatal — el auto-retry en `poll_inbox()` lo recupera en el siguiente ciclo de 5s
