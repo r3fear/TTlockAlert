@@ -134,7 +134,9 @@ Clase `TTLockMonitor`:
 
 Todos los demás `recordType` se ignoran silenciosamente.
 
-- `get_battery()`: retorna el último nivel de batería conocido (`electricQuantity` del último evento recibido), o `-1` si aún no se ha recibido ningún evento.
+- `get_battery()`: retorna el último nivel de batería conocido (`electricQuantity` del último evento recibido), o `-1` si no se ha recibido ningún evento desde el arranque. Valor en memoria — se pierde al reiniciar.
+- `get_lock_detail()`: `GET /v3/lock/detail` — consulta la API de TTLock en tiempo real. Retorna dict con al menos `electricQuantity` y `lockAlias`. Retorna `{}` ante cualquier error. Llama a `_ensure_token()` internamente.
+- `get_last_record()`: `GET /v3/lockRecord/list?pageSize=1` — retorna el registro de acceso más reciente directamente desde la API (campos: `username`, `keyboardPwd`, `recordType`, `lockDate`, `success`). Retorna `{}` si la lista está vacía o hay error.
 - La foto se captura únicamente en aperturas exitosas: `success == 1` y `recordType` en `{1, 4, 7, 8}`. No se captura en intentos fallidos, puerta forzada ni batería baja.
 
 ### `wa_sender.py`
@@ -394,10 +396,11 @@ Enviar desde un número autorizado (debe estar en `recipients`). El bot responde
 `TT ESTADO`
 ```
 📍 Estado — Puerta Principal
-WhatsApp gateway: conectado ✅
-Batería cerradura: 85%
-Último acceso: Juan (Código numérico) — 28/06/2025 14:32
+🔋 Batería: 85%
+🔓 Último acceso: Juan (Código numérico) — 29/06/2026 14:35
 ```
+
+Los datos de batería y último acceso se consultan en tiempo real desde la API de TTLock al ejecutar el comando. Si la API no responde, se muestran los últimos valores en memoria seguidos de `(caché)`. Si no hay datos en memoria, se indica `desconocida` / `Sin aperturas registradas`.
 
 `TT HISTORIAL`
 ```
@@ -558,6 +561,8 @@ Instalar: `py -m pip install -r requirements.txt`
 - `process_command()` ignora silenciosamente mensajes sin prefijo `"TT "` — diseño intencional para coexistir con RingAlert u otros servicios que compartan el mismo inbox de wa-gateway
 - `poll_inbox()` usa `GET /inbox?consumer=ttlockalert` (no la cola global) — el consumer name es fijo en el código; si wa-gateway se reinicia y pierde el registro, `poll_inbox()` lo detecta (`ok: false` con error de "no registrado") y llama a `register_consumer()` automáticamente antes de reintentar
 - `register_consumer()` se llama al arrancar `main.py` solo si wa-gateway está disponible; si falla no es fatal — el auto-retry en `poll_inbox()` lo recupera en el siguiente ciclo de 5s
+- `get_lock_detail()` y `get_last_record()` son llamadas síncronas que bloquean brevemente el event loop — aceptable porque son llamadas raras e interactivas (solo al ejecutar `TT ESTADO`); usan `_ensure_token()` internamente por lo que no requieren preparación previa
+- `TT ESTADO` muestra datos en vivo desde TTLock API; en modo fallback agrega el sufijo `(caché)` para distinguir datos frescos de datos en memoria
 - `check_gateway_health()` **solo loguea** las transiciones de estado — wa-gateway gestiona sus propios emails de alerta por desconexión/reconexión interna de WhatsApp
 - `send_email_fallback()` solo se activa cuando wa-gateway no responde en HTTP (proceso caído); los errores internos de WhatsApp (sesión caída, desconexión) los gestiona wa-gateway con su propio mecanismo de email
 - `battery_alert_threshold` es configurable en `config.yaml`; la alerta se envía máximo una vez cada 24 horas aunque la batería siga baja

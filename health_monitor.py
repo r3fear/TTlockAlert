@@ -281,18 +281,40 @@ class HealthMonitor:
         return "\n".join(lines)
 
     def _reply_estado(self) -> str:
-        gateway_status = "conectado ✅" if self._gateway_was_alive else "desconectado ❌"
-        battery = self._monitor.get_battery()
-        battery_str = f"{battery}%" if battery >= 0 else "desconocida"
-        last_access = "Sin aperturas registradas"
-        if self._last_openings:
+        # Battery — live API, fall back to last known value from events
+        detail = self._monitor.get_lock_detail()
+        live_battery = detail.get("electricQuantity")
+        if live_battery is not None:
+            battery_str = f"{live_battery}%"
+            lock_alias = detail.get("lockAlias") or self._lock_name
+        else:
+            mem_battery = self._monitor.get_battery()
+            battery_str = f"{mem_battery}% (caché)" if mem_battery >= 0 else "desconocida"
+            lock_alias = self._lock_name
+
+        # Last access — live API, fall back to in-memory history
+        record = self._monitor.get_last_record()
+        if record:
+            username = record.get("username") or "—"
+            rt = int(record.get("recordType", -1))
+            method = _RECORD_TYPE_NAMES.get(rt, f"tipo {rt}")
+            try:
+                date_str = datetime.fromtimestamp(
+                    int(record.get("lockDate", 0)) / 1000
+                ).strftime("%d/%m/%Y %H:%M")
+            except Exception:
+                date_str = "?"
+            last_access = f"{username} ({method}) — {date_str}"
+        elif self._last_openings:
             e = self._last_openings[0]
-            last_access = f"{e['username'] or '—'} ({e['record_type_name']}) — {e['lockDate']}"
+            last_access = f"{e['username'] or '—'} ({e['record_type_name']}) — {e['lockDate']} (caché)"
+        else:
+            last_access = "Sin aperturas registradas"
+
         lines = [
-            f"📍 Estado — {self._lock_name}",
-            f"WhatsApp gateway: {gateway_status}",
-            f"Batería cerradura: {battery_str}",
-            f"Último acceso: {last_access}",
+            f"📍 Estado — {lock_alias}",
+            f"🔋 Batería: {battery_str}",
+            f"🔓 Último acceso: {last_access}",
         ]
         if self.is_silenced():
             until_str = datetime.fromtimestamp(self._silence_until).strftime("%H:%M")

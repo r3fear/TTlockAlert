@@ -39,6 +39,7 @@ class TTLockMonitor:
         self._client_secret = tt["client_secret"]
         self._username = tt["username"]
         self._password_md5 = tt["password_md5"]
+        self._lock_id = int(tt.get("lock_id", 0))
         self._lock_name = tt.get("lock_name", "Cerradura")
         self._vercel_url = tt["vercel_url"].rstrip("/")
         self._api_key = tt["api_key"]
@@ -290,6 +291,54 @@ class TTLockMonitor:
 
     def stop(self) -> None:
         self._running = False
+
+    def get_lock_detail(self) -> dict:
+        """GET /v3/lock/detail — returns lock info including electricQuantity and lockAlias.
+
+        Returns empty dict on any error; caller must treat missing keys as unavailable.
+        """
+        if not self._ensure_token():
+            return {}
+        params = urllib.parse.urlencode({
+            "clientId": self._client_id,
+            "accessToken": self._token_data["access_token"],
+            "lockId": self._lock_id,
+            "date": int(time.time() * 1000),
+        })
+        try:
+            with urllib.request.urlopen(
+                f"{self._api_url}/v3/lock/detail?{params}", timeout=10
+            ) as resp:
+                return json.loads(resp.read())
+        except Exception as e:
+            logger.warning("get_lock_detail error: %s", e)
+            return {}
+
+    def get_last_record(self) -> dict:
+        """GET /v3/lockRecord/list with pageSize=1 — returns the most recent lock record.
+
+        Returns empty dict on any error or when the list is empty.
+        """
+        if not self._ensure_token():
+            return {}
+        params = urllib.parse.urlencode({
+            "clientId": self._client_id,
+            "accessToken": self._token_data["access_token"],
+            "lockId": self._lock_id,
+            "pageNo": 1,
+            "pageSize": 1,
+            "date": int(time.time() * 1000),
+        })
+        try:
+            with urllib.request.urlopen(
+                f"{self._api_url}/v3/lockRecord/list?{params}", timeout=10
+            ) as resp:
+                data = json.loads(resp.read())
+                records = data.get("list", [])
+                return records[0] if records else {}
+        except Exception as e:
+            logger.warning("get_last_record error: %s", e)
+            return {}
 
     def get_battery(self) -> int:
         """Return last known battery level (0-100), or -1 if no event has been received yet."""
