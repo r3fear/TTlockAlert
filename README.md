@@ -137,6 +137,8 @@ Todos los demás `recordType` se ignoran silenciosamente.
 - `get_battery()`: retorna el último nivel de batería conocido (`electricQuantity` del último evento recibido), o `-1` si no se ha recibido ningún evento desde el arranque. Valor en memoria — se pierde al reiniciar.
 - `get_lock_detail()`: `GET /v3/lock/detail` — consulta la API de TTLock en tiempo real. Retorna dict con al menos `electricQuantity` y `lockAlias`. Retorna `{}` ante cualquier error. Llama a `_ensure_token()` internamente.
 - `get_last_record()`: `GET /v3/lockRecord/list?pageSize=1` — retorna el registro de acceso más reciente directamente desde la API (campos: `username`, `keyboardPwd`, `recordType`, `lockDate`, `success`). Retorna `{}` si la lista está vacía o hay error.
+- `get_recent_records(count=3)`: `GET /v3/lockRecord/list?pageSize=count` — retorna los `count` registros más recientes de cualquier tipo sin filtrar. Retorna lista en éxito, `None` en error. Usado por `TT HISTORIAL`.
+- `get_today_records()`: `GET /v3/lockRecord/list` con `startDate=medianoche` y `endDate=ahora` — pagina automáticamente (pageSize=100) hasta obtener todos los registros del día. Retorna lista (posiblemente vacía) si la API responde, o `None` si hay error — distinción necesaria para que el reporte diario sepa si caer al fallback en memoria.
 - La foto se captura únicamente en aperturas exitosas: `success == 1` y `recordType` en `{1, 4, 7, 8}`. No se captura en intentos fallidos, puerta forzada ni batería baja.
 
 ### `wa_sender.py`
@@ -386,7 +388,8 @@ Enviar desde un número autorizado (debe estar en `recipients`). El bot responde
 | Comando | Efecto |
 |---|---|
 | `TT ESTADO` | Reporte inmediato del sistema |
-| `TT HISTORIAL` | Últimas 3 aperturas registradas |
+| `TT HISTORIAL` | Últimos 3 eventos (cualquier tipo) |
+| `TT HISTORIAL 10` | Últimos N eventos (máximo 20) |
 | `TT SILENCIAR 2h` | Silencia alertas por 2 horas |
 | `TT SILENCIAR 0.5h` | Silencia alertas por 30 minutos |
 | `TT REACTIVAR` | Cancela el silencio activo |
@@ -402,14 +405,16 @@ Enviar desde un número autorizado (debe estar en `recipients`). El bot responde
 
 Los datos de batería y último acceso se consultan en tiempo real desde la API de TTLock al ejecutar el comando. Si la API no responde, se muestran los últimos valores en memoria seguidos de `(caché)`. Si no hay datos en memoria, se indica `desconocida` / `Sin aperturas registradas`.
 
-`TT HISTORIAL`
+`TT HISTORIAL` / `TT HISTORIAL 5`
 ```
-🔓 Historial — Puerta Principal
+📋 Historial — Puerta Principal (últimos 3)
 ━━━━━━━━━━━━━━━━━━━━━
-1. Juan (Código numérico) — 28/06/2025 14:32
-2. Maria (App Bluetooth) — 28/06/2025 09:15
-3. — (Tarjeta IC) — 27/06/2025 20:41
+1. 🔓 Juan (Código numérico) — 29/06/2026 14:32
+2. ⚠️ — (Código incorrecto) — 29/06/2026 14:30
+3. 🔓 Maria (App Bluetooth) — 29/06/2026 09:15
 ```
+
+Muestra todos los tipos de evento (aperturas, intentos fallidos, puerta forzada, batería baja). Sin número devuelve los últimos 3; con número devuelve hasta 20. Los registros se consultan en tiempo real desde la API de TTLock. Si la API no responde, usa el historial en memoria con sufijo `(caché)`.
 
 `TT SILENCIAR 2h`
 ```
@@ -453,6 +458,10 @@ Si las alertas están silenciadas en el momento del envío, se añade una línea
 - Tras enviar el reporte, se ejecuta automáticamente la limpieza de fotos antiguas
 
 **Deshabilitar:** establecer `daily_report_enabled: false` en `config.yaml`. El loop de monitoreo continúa corriendo normalmente (batería, gateway) pero no envía el reporte ni limpia fotos.
+
+Los datos del reporte se obtienen en tiempo real desde la API de TTLock al momento de enviar:
+- **Batería**: vía `get_lock_detail()`. Si falla, usa el último valor en memoria con sufijo `(caché)`.
+- **Aperturas / Fallos del día**: vía `get_today_records()` con rango `medianoche → ahora`. Si la API no responde (`None`), usa los contadores en memoria con sufijo `(caché)`. Si la API responde con lista vacía, los contadores son `0` (dato válido, no caché).
 
 ### Limpieza automática de fotos
 
@@ -562,7 +571,8 @@ Instalar: `py -m pip install -r requirements.txt`
 - `poll_inbox()` usa `GET /inbox?consumer=ttlockalert` (no la cola global) — el consumer name es fijo en el código; si wa-gateway se reinicia y pierde el registro, `poll_inbox()` lo detecta (`ok: false` con error de "no registrado") y llama a `register_consumer()` automáticamente antes de reintentar
 - `register_consumer()` se llama al arrancar `main.py` solo si wa-gateway está disponible; si falla no es fatal — el auto-retry en `poll_inbox()` lo recupera en el siguiente ciclo de 5s
 - `get_lock_detail()` y `get_last_record()` son llamadas síncronas que bloquean brevemente el event loop — aceptable porque son llamadas raras e interactivas (solo al ejecutar `TT ESTADO`); usan `_ensure_token()` internamente por lo que no requieren preparación previa
-- `TT ESTADO` muestra datos en vivo desde TTLock API; en modo fallback agrega el sufijo `(caché)` para distinguir datos frescos de datos en memoria
+- `TT ESTADO` y el reporte diario consultan la API de TTLock en tiempo real; en modo fallback agregan el sufijo `(caché)` para distinguir datos frescos de datos en memoria
+- `get_today_records()` retorna `None` (error de API) vs `[]` (sin registros hoy) — distinción intencional para que el reporte diario solo active el fallback en memoria ante errores reales, no ante días sin actividad
 - `check_gateway_health()` **solo loguea** las transiciones de estado — wa-gateway gestiona sus propios emails de alerta por desconexión/reconexión interna de WhatsApp
 - `send_email_fallback()` solo se activa cuando wa-gateway no responde en HTTP (proceso caído); los errores internos de WhatsApp (sesión caída, desconexión) los gestiona wa-gateway con su propio mecanismo de email
 - `battery_alert_threshold` es configurable en `config.yaml`; la alerta se envía máximo una vez cada 24 horas aunque la batería siga baja

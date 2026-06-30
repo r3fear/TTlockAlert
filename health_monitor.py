@@ -8,12 +8,23 @@ from datetime import datetime
 logger = logging.getLogger("health_monitor")
 
 _OPEN_TYPES = {1, 4, 7, 8}
+_ALL_KNOWN_TYPES = {1, 4, 7, 8, 9, 10, 11}
 
 _RECORD_TYPE_NAMES = {
-    1: "App Bluetooth",
-    4: "Código numérico",
-    7: "Huella digital",
-    8: "Tarjeta IC",
+    1:  "App Bluetooth",
+    4:  "Código numérico",
+    7:  "Huella digital",
+    8:  "Tarjeta IC",
+    9:  "Código incorrecto",
+    10: "Puerta forzada",
+    11: "Batería baja",
+}
+
+_RECORD_TYPE_EMOJIS = {
+    1: "🔓", 4: "🔓", 7: "🔓", 8: "🔓",
+    9: "⚠️",
+    10: "🚨",
+    11: "🔋",
 }
 
 
@@ -41,7 +52,8 @@ class HealthMonitor:
         self._silence_until = 0.0
         self._last_battery_alert = 0.0
         self._last_report_date = None
-        self._last_openings = []  # max 3 entries: {username, record_type_name, lockDate}
+        self._last_openings = []  # max 3 opens: {username, record_type_name, lockDate} — TT ESTADO fallback
+        self._last_events = []   # max 20 events of any type — TT HISTORIAL fallback
         self._counts_date = None
         self._openings_today_count = 0
         self._failed_today_count = 0
@@ -134,15 +146,39 @@ class HealthMonitor:
         return sum(1 for f in os.listdir(day_dir) if f.lower().endswith(".jpg"))
 
     def _build_daily_report(self, now: datetime) -> str:
-        battery = self._monitor.get_battery()
-        battery_str = f"{battery}%" if battery >= 0 else "desconocida"
-        self._check_date_reset(now.date())
+        # Battery — live API, fall back to last in-memory value
+        detail = self._monitor.get_lock_detail()
+        live_battery = detail.get("electricQuantity")
+        if live_battery is not None:
+            battery_str = f"{live_battery}%"
+        else:
+            mem_battery = self._monitor.get_battery()
+            battery_str = f"{mem_battery}% (caché)" if mem_battery >= 0 else "desconocida"
+
+        # Today's counts — live API, fall back to in-memory counters
+        today_records = self._monitor.get_today_records()
+        if today_records is not None:
+            openings = sum(
+                1 for r in today_records
+                if int(r.get("recordType", -1)) in _OPEN_TYPES and int(r.get("success", 0)) == 1
+            )
+            failures = sum(
+                1 for r in today_records
+                if int(r.get("recordType", -1)) == 9
+            )
+            suffix = ""
+        else:
+            self._check_date_reset(now.date())
+            openings = self._openings_today_count
+            failures = self._failed_today_count
+            suffix = " (caché)"
+
         lines = [
             f"📊 Reporte diario — {now.strftime('%d/%m/%Y')}",
             "━━━━━━━━━━━━━━━━━━━━━",
             f"Batería cerradura: {battery_str}",
-            f"Aperturas hoy: {self._openings_today_count}",
-            f"Intentos fallidos hoy: {self._failed_today_count}",
+            f"Aperturas hoy: {openings}{suffix}",
+            f"Intentos fallidos hoy: {failures}{suffix}",
         ]
         if self.is_silenced():
             until_str = datetime.fromtimestamp(self._silence_until).strftime("%H:%M")
@@ -195,18 +231,19 @@ class HealthMonitor:
             self._counts_date = today
 
     def register_event(self, event: dict) -> None:
-        """Update daily counters and opening history. Call from main.py for every event."""
+        """Update daily counters and event history. Call from main.py for every event."""
         today = datetime.now().date()
         self._check_date_reset(today)
 
         record_type = int(event.get("recordType", -1))
 
+        try:
+            date_str = datetime.fromtimestamp(int(event.get("lockDate", 0)) / 1000).strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            date_str = "?"
+
         if record_type in _OPEN_TYPES and int(event.get("success", 0)) == 1:
             self._openings_today_count += 1
-            try:
-                date_str = datetime.fromtimestamp(int(event.get("lockDate", 0)) / 1000).strftime("%d/%m/%Y %H:%M")
-            except Exception:
-                date_str = "?"
             self._last_openings.insert(0, {
                 "username": event.get("username", ""),
                 "record_type_name": _RECORD_TYPE_NAMES.get(record_type, str(record_type)),
@@ -214,8 +251,16 @@ class HealthMonitor:
             })
             self._last_openings = self._last_openings[:3]
 
-        elif record_type == 9:  # Código incorrecto
+        elif record_type == 9:
             self._failed_today_count += 1
+
+        if record_type in _ALL_KNOWN_TYPES:
+            self._last_events.insert(0, {
+                "record_type": record_type,
+                "username": event.get("username", ""),
+                "lockDate": date_str,
+            })
+            self._last_events = self._last_events[:20]
 
     # ------------------------------------------------------------------
     # WhatsApp command processing
@@ -241,8 +286,16 @@ class HealthMonitor:
 
         cmd = stripped.upper()
 
-        if cmd == "TT HISTORIAL":
-            reply = self._reply_historial()
+        if cmd == "TT HISTORIAL" or cmd.startswith("TT HISTORIAL "):
+            parts = cmd.split()
+            count = 3
+            if len(parts) == 3:
+                try:
+                    count = max(1, min(20, int(parts[2])))
+                except ValueError:
+                    self._wa.send_direct(sender, "Formato inválido. Ejemplo: TT HISTORIAL 10 (máximo 20)")
+                    return
+            reply = self._reply_historial(count)
 
         elif cmd.startswith("TT SILENCIAR "):
             match = re.match(r"TT SILENCIAR ([\d.]+)H$", cmd)
@@ -270,14 +323,39 @@ class HealthMonitor:
 
         self._wa.send_direct(sender, reply)
 
-    def _reply_historial(self) -> str:
-        header = f"🔓 Historial — {self._lock_name}\n━━━━━━━━━━━━━━━━━━━━━"
-        if not self._last_openings:
-            return f"{header}\nSin aperturas registradas desde que inició el servicio."
+    def _reply_historial(self, count: int = 3) -> str:
+        header = f"📋 Historial — {self._lock_name} (últimos {count})\n━━━━━━━━━━━━━━━━━━━━━"
+
+        records = self._monitor.get_recent_records(count)
+
+        if records is not None:
+            if not records:
+                return f"{header}\nSin eventos registrados."
+            lines = [header]
+            for i, r in enumerate(records, 1):
+                rt = int(r.get("recordType", -1))
+                emoji = _RECORD_TYPE_EMOJIS.get(rt, "•")
+                type_name = _RECORD_TYPE_NAMES.get(rt, f"tipo {rt}")
+                name = r.get("username") or "—"
+                try:
+                    date_str = datetime.fromtimestamp(
+                        int(r.get("lockDate", 0)) / 1000
+                    ).strftime("%d/%m/%Y %H:%M")
+                except Exception:
+                    date_str = "?"
+                lines.append(f"{i}. {emoji} {name} ({type_name}) — {date_str}")
+            return "\n".join(lines)
+
+        # Fallback to in-memory events when API is unavailable
+        if not self._last_events:
+            return f"{header}\nSin eventos registrados desde que inició el servicio."
         lines = [header]
-        for i, entry in enumerate(self._last_openings, 1):
+        for i, entry in enumerate(self._last_events[:count], 1):
+            rt = entry["record_type"]
+            emoji = _RECORD_TYPE_EMOJIS.get(rt, "•")
+            type_name = _RECORD_TYPE_NAMES.get(rt, f"tipo {rt}")
             name = entry["username"] or "—"
-            lines.append(f"{i}. {name} ({entry['record_type_name']}) — {entry['lockDate']}")
+            lines.append(f"{i}. {emoji} {name} ({type_name}) — {entry['lockDate']} (caché)")
         return "\n".join(lines)
 
     def _reply_estado(self) -> str:

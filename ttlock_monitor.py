@@ -340,6 +340,80 @@ class TTLockMonitor:
             logger.warning("get_last_record error: %s", e)
             return {}
 
+    def get_recent_records(self, count: int = 3):
+        """GET /v3/lockRecord/list — returns the `count` most recent records of any type.
+
+        Returns list (possibly empty) on success, None on any error.
+        """
+        if not self._ensure_token():
+            return None
+        params = urllib.parse.urlencode({
+            "clientId": self._client_id,
+            "accessToken": self._token_data["access_token"],
+            "lockId": self._lock_id,
+            "pageNo": 1,
+            "pageSize": count,
+            "date": int(time.time() * 1000),
+        })
+        try:
+            with urllib.request.urlopen(
+                f"{self._api_url}/v3/lockRecord/list?{params}", timeout=10
+            ) as resp:
+                data = json.loads(resp.read())
+        except Exception as e:
+            logger.warning("get_recent_records error: %s", e)
+            return None
+        if data.get("errcode") and int(data.get("errcode", 0)) != 0:
+            logger.warning("get_recent_records API error: %s", data)
+            return None
+        return data.get("list", [])
+
+    def get_today_records(self):
+        """GET /v3/lockRecord/list — returns all records since today's midnight.
+
+        Paginates automatically until all records are fetched.
+        Returns a list (possibly empty) on success, or None on any error so the
+        caller can distinguish between "no records today" and "API unavailable".
+        """
+        if not self._ensure_token():
+            return None
+        midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        start_ms = int(midnight.timestamp() * 1000)
+        now_ms = int(time.time() * 1000)
+        all_records = []
+        page_no = 1
+        page_size = 100
+        while True:
+            params = urllib.parse.urlencode({
+                "clientId": self._client_id,
+                "accessToken": self._token_data["access_token"],
+                "lockId": self._lock_id,
+                "pageNo": page_no,
+                "pageSize": page_size,
+                "startDate": start_ms,
+                "endDate": now_ms,
+                "date": now_ms,
+            })
+            try:
+                with urllib.request.urlopen(
+                    f"{self._api_url}/v3/lockRecord/list?{params}", timeout=15
+                ) as resp:
+                    data = json.loads(resp.read())
+            except Exception as e:
+                logger.warning("get_today_records page %d error: %s", page_no, e)
+                return None
+            if data.get("errcode") and int(data.get("errcode", 0)) != 0:
+                logger.warning("get_today_records API error: %s", data)
+                return None
+            records = data.get("list", [])
+            all_records.extend(records)
+            total = int(data.get("total", 0))
+            if len(all_records) >= total or len(records) < page_size:
+                break
+            page_no += 1
+        logger.debug("get_today_records: %d record(s) fetched for today", len(all_records))
+        return all_records
+
     def get_battery(self) -> int:
         """Return last known battery level (0-100), or -1 if no event has been received yet."""
         return self._battery
