@@ -224,7 +224,7 @@ class TTLockMonitor:
             lines = [f"🔓 {name} — Puerta abierta", f"Método: {type_name}"]
             if username:
                 lines.append(f"Usuario: {username}")
-            if keyboard_pwd:
+            if keyboard_pwd and record_type == 4:
                 lines.append(f"Clave: {keyboard_pwd}")
             lines += [f"Hora: {fecha}", f"Batería: {battery}%"]
             return "\n".join(lines)
@@ -283,9 +283,12 @@ class TTLockMonitor:
             logger.debug("Ignoring recordType %d (%s)", record_type, type_name)
             return
 
-        battery = event.get("electricQuantity")
-        if battery is not None:
-            self._battery = int(battery)
+        detail = self.get_lock_detail()
+        battery_from_detail = detail.get("electricQuantity")
+        if battery_from_detail is not None:
+            self._battery = int(battery_from_detail)
+        elif event.get("electricQuantity") is not None:
+            self._battery = int(event["electricQuantity"])
 
         success = int(event.get("success", 1))
         level = "alto" if (record_type in UNLOCK_TYPES and success == 0) else base_level
